@@ -1,0 +1,9 @@
+safeheal:
+  kubeconfig-context: "safeheal-dev"
+  allowlisted-namespaces: ["default"]
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "health"
