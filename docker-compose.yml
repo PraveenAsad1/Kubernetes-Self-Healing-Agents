@@ -1,0 +1,10 @@
+version: '3.8'
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: safeheal
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: safeheal
+    ports:
+      - "5432:5432"

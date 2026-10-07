@@ -53,3 +53,7 @@
 ## ADR 17: REMEDIATING Conflict Handling
 **Context:** A patch encounters a `resourceVersion` conflict.
 **Decision:** A conflict voids the approval. The system transitions back to INVESTIGATING (incrementing attempt) to request a fresh proposal and approval, or ESCALATED if budget exhausted. No retrying the same approved patch.
+
+## ADR 18: Language and Tech Stack Versions
+**Context:** We need a strict language baseline for the backend logic and tests.
+**Decision:** All application and test source is strictly Java 25. No Kotlin, no Lombok. We use Gradle Kotlin DSL for build scripts only. We rely on Gradle 9.8.1 to support Java 25, Spring Boot 4.0.0 for core framework, and the latest ArchUnit (1.4.0) for testing.
