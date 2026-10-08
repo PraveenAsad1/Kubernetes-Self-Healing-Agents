@@ -47,6 +47,10 @@ public class SafeHealPropertiesTest {
     }
 
     @EnableConfigurationProperties(SafeHealProperties.class)
-    @org.springframework.boot.autoconfigure.SpringBootApplication
-    static class TestConfig {}
+    static class TestConfig {
+        @org.springframework.context.annotation.Bean
+        public org.springframework.validation.beanvalidation.LocalValidatorFactoryBean validator() {
+            return new org.springframework.validation.beanvalidation.LocalValidatorFactoryBean();
+        }
+    }
 }
