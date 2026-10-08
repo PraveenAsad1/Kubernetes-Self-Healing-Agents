@@ -9,8 +9,14 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 public class ArchitectureRuleTest {
 
     @Test
-    void testIncidentAndAgentRuleViolation() {
+    void testIncidentRuleViolation() {
         JavaClasses importedClasses = new ClassFileImporter().importClasses(com.safeheal.fixtures.incident.ViolatingIncidentClass.class);
+        assertThrows(AssertionError.class, () -> ArchitectureTest.incidentAndAgentMustNotDependOnSpringOrFabric8OrOthers.check(importedClasses));
+    }
+
+    @Test
+    void testAgentRuleViolation() {
+        JavaClasses importedClasses = new ClassFileImporter().importClasses(com.safeheal.fixtures.agent.ViolatingAgentClass.class);
         assertThrows(AssertionError.class, () -> ArchitectureTest.incidentAndAgentMustNotDependOnSpringOrFabric8OrOthers.check(importedClasses));
     }
 

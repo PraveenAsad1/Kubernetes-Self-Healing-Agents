@@ -1,31 +1,52 @@
 package com.safeheal.config;
 
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.test.context.TestPropertySource;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
-import java.util.List;
+import static org.assertj.core.api.Assertions.assertThat;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-
-@SpringBootTest(classes = SafeHealPropertiesTest.TestConfig.class)
-@TestPropertySource(properties = {
-    "safeheal.kubeconfig-context=dev-cluster",
-    "safeheal.allowlisted-namespaces=default,backend"
-})
 public class SafeHealPropertiesTest {
 
-    @EnableConfigurationProperties(SafeHealProperties.class)
-    static class TestConfig {}
-
-    @Autowired
-    private SafeHealProperties properties;
+    private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
+            .withUserConfiguration(TestConfig.class);
 
     @Test
-    public void propertiesAreBoundCorrectly() {
-        assertEquals("dev-cluster", properties.kubeconfigContext());
-        assertEquals(List.of("default", "backend"), properties.allowlistedNamespaces());
+    public void validContextPasses() {
+        contextRunner
+            .withPropertyValues(
+                "safeheal.mode=KUBECONFIG",
+                "safeheal.kubeconfig-context=kind-safeheal-dev"
+            )
+            .run(context -> {
+                assertThat(context).hasNotFailed();
+            });
     }
+
+    @Test
+    public void blankContextInKubeconfigModeFails() {
+        contextRunner
+            .withPropertyValues(
+                "safeheal.mode=KUBECONFIG",
+                "safeheal.kubeconfig-context="
+            )
+            .run(context -> {
+                assertThat(context).hasFailed();
+            });
+    }
+
+    @Test
+    public void nullModeFailsValidation() {
+        contextRunner
+            .withPropertyValues(
+                "safeheal.kubeconfig-context=kind-safeheal-dev"
+            )
+            .run(context -> {
+                assertThat(context).hasFailed();
+            });
+    }
+
+    @EnableConfigurationProperties(SafeHealProperties.class)
+    @org.springframework.boot.autoconfigure.SpringBootApplication
+    static class TestConfig {}
 }

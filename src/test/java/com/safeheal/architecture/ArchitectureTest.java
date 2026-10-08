@@ -5,6 +5,7 @@ import com.tngtech.archunit.junit.AnalyzeClasses;
 import com.tngtech.archunit.junit.ArchTest;
 import com.tngtech.archunit.lang.ArchRule;
 
+import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 
 @AnalyzeClasses(packages = "com.safeheal", importOptions = ImportOption.DoNotIncludeTests.class)
@@ -31,4 +32,18 @@ public class ArchitectureTest {
             .should().dependOnClassesThat().resideInAnyPackage("..k8s..", "..llm..")
             .allowEmptyShould(true)
             .because("policy must not depend on k8s or llm");
+
+    @ArchTest
+    public static final ArchRule persistenceMayDependOnIncidentAndSpring = classes()
+            .that().resideInAPackage("..persistence..")
+            .should().onlyDependOnClassesThat().resideInAnyPackage("..persistence..", "..incident..", "org.springframework..", "java..")
+            .allowEmptyShould(true)
+            .because("persistence is allowed to depend on incident and Spring");
+            
+    @ArchTest
+    public static final ArchRule incidentAgentPolicyMustNotDependOnPersistence = noClasses()
+            .that().resideInAnyPackage("..incident..", "..agent..", "..policy..")
+            .should().dependOnClassesThat().resideInAPackage("..persistence..")
+            .allowEmptyShould(true)
+            .because("domain must not depend on persistence");
 }

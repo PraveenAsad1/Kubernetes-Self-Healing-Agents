@@ -9,7 +9,7 @@ import java.util.List;
 public record SafeHealProperties(
     String kubeconfigContext,
     List<String> allowlistedNamespaces,
-    Mode mode,
+    @jakarta.validation.constraints.NotNull Mode mode,
     List<String> allowedContexts
 ) {
     public enum Mode {
@@ -17,11 +17,11 @@ public record SafeHealProperties(
     }
 
     public SafeHealProperties {
-        if (mode == null) {
-            mode = Mode.KUBECONFIG;
-        }
         if (allowedContexts == null || allowedContexts.isEmpty()) {
             allowedContexts = List.of("kind-safeheal-dev");
+        }
+        if (mode != null) {
+            ClusterContextGuard.validateContext(mode, kubeconfigContext, allowedContexts);
         }
     }
 }

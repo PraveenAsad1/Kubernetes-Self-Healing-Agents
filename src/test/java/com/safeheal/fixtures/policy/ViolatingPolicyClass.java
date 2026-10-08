@@ -1,7 +1,7 @@
 package com.safeheal.fixtures.policy;
 
-import com.safeheal.k8s.SomeK8sClass;
+import com.safeheal.fixtures.k8s.FakeK8sClass;
 
 public class ViolatingPolicyClass {
-    SomeK8sClass k8sClass;
+    FakeK8sClass k8sClass;
 }
