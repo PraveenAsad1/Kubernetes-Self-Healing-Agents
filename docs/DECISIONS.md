@@ -56,4 +56,7 @@
 
 ## ADR 18: Language and Tech Stack Versions
 **Context:** We need a strict language baseline for the backend logic and tests.
-**Decision:** All application and test source is strictly Java 25. No Kotlin, no Lombok. We use Gradle Kotlin DSL for build scripts only. We rely on Gradle 9.8.1 to support Java 25, Spring Boot 4.0.0 for core framework, and the latest ArchUnit (1.4.0) for testing.
+**Decision:** All application and test source is strictly Java 25. No Kotlin, no Lombok. We use Gradle Kotlin DSL for build scripts only. We rely on Gradle 9.8.1 to support Java 25, Spring Boot 4.0.8 for core framework, and the latest ArchUnit (1.4.2) for testing.
+
+## ADR 19: Rule 16 Guard Startup Wiring
+**Decision:** We use a pure Java ClusterContextGuard to enforce the kubeconfig-context allowlist. Startup wiring is a Phase 2 acceptance criterion (fabric8 supplies the active context; startup must fail on a disallowed one, with a test).
