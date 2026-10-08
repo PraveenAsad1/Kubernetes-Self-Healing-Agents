@@ -1,6 +1,6 @@
 plugins {
-    id("org.springframework.boot") version "4.0.0"
-    id("io.spring.dependency-management") version "1.1.6"
+    id("org.springframework.boot") version "4.0.8"
+    id("io.spring.dependency-management") version "1.1.7"
     id("java")
 }
 
@@ -22,7 +22,7 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("org.springframework.boot:spring-boot-starter-validation")
     testImplementation("org.springframework.boot:spring-boot-starter-test")
-    testImplementation("com.tngtech.archunit:archunit-junit5:1.4.0")
+    testImplementation("com.tngtech.archunit:archunit-junit5:1.4.2")
 }
 
 tasks.withType<Test> {
