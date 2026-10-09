@@ -1,7 +1,6 @@
 package com.safeheal.incident;
 
 import java.time.Instant;
-import java.util.Map;
 
 public record Incident(
     String id,
@@ -13,6 +12,8 @@ public record Incident(
     int attempt,
     int transientRetries,
     int version,
+    String claimedBy,
+    Instant leaseUntil,
     Instant createdAt,
     Instant updatedAt,
     Instant closedAt

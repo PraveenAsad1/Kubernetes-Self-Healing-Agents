@@ -11,7 +11,7 @@ public sealed interface IncidentEvent {
     record PolicyDenied() implements IncidentEvent {}
     record ExecutionPolicyDenied() implements IncidentEvent {}
     record ProposalAccepted() implements IncidentEvent {}
-    record Approved(String proposalId, String proposalHash, String approverIdentity, Instant approvedUntil) implements IncidentEvent {}
+    record Approved(String proposalId, String proposalHash, String approverIdentity, Instant approvedAt) implements IncidentEvent {}
     record Rejected() implements IncidentEvent {}
     record Timeout() implements IncidentEvent {}
     record WorkloadDeleted() implements IncidentEvent {}

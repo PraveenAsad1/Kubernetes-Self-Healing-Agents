@@ -1,20 +1,9 @@
 package com.safeheal.incident;
 
-public record Transition(
-    IncidentState nextState,
-    SideEffect sideEffect
-) {
+import java.util.Set;
+
+public record Transition(IncidentState nextState, Set<SideEffect> sideEffects) {
     public enum SideEffect {
-        NONE,
-        CREATE_INTENT,
-        INCREMENT_ATTEMPT,
-        CLOSE_INCIDENT,
-        STORE_EVIDENCE,
-        STORE_PROPOSAL,
-        MARK_INTENT_APPLIED,
-        TERMINATE_INTENT,
-        SYNC_INTENT_STATE,
-        INCREMENT_TRANSIENT_RETRY,
-        LOG
+        LOG, STORE_EVIDENCE, INCREMENT_TRANSIENT_RETRY, STORE_PROPOSAL, CREATE_INTENT, TERMINATE_INTENT, INCREMENT_ATTEMPT, MARK_INTENT_APPLIED, SYNC_INTENT_STATE, RESET_TRANSIENT_RETRIES
     }
 }

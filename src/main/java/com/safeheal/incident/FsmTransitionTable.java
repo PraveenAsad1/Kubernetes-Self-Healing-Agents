@@ -1,130 +1,135 @@
 package com.safeheal.incident;
 
 import java.time.Clock;
+import java.util.ArrayList;
+import java.util.EnumSet;
+import java.util.List;
+import java.util.Set;
 
 public class FsmTransitionTable {
 
-    public static Transition decide(Incident incident, IncidentEvent event, FsmConfig config, Clock clock) {
-        if (incident.state().isTerminal()) {
-            throw new IllegalTransitionException(incident.state(), event, "Incident is in a terminal state");
-        }
+    public record Rule(IncidentState from, Class<? extends IncidentEvent> eventType, Guard guard, IncidentState to, Set<Transition.SideEffect> sideEffects) {}
 
-        return switch (incident.state()) {
-            case DETECTED -> handleDetected(incident, event, config);
-            case INVESTIGATING -> handleInvestigating(incident, event, config);
-            case DIAGNOSING -> handleDiagnosing(incident, event, config);
-            case AWAITING_APPROVAL -> handleAwaitingApproval(incident, event, config, clock);
-            case REMEDIATING -> handleRemediating(incident, event, config);
-            case VERIFYING -> handleVerifying(incident, event, config);
-            case REFLECTING -> handleReflecting(incident, event, config);
-            default -> throw new IllegalTransitionException(incident.state(), event, "Unhandled state");
+    public interface Guard {
+        boolean test(Incident incident, IncidentEvent event, FsmConfig config, Clock clock);
+        String description();
+    }
+
+    private static final List<Rule> RULES = new ArrayList<>();
+
+    static {
+        // DETECTED
+        addRule(IncidentState.DETECTED, IncidentEvent.ProcessingStarted.class, noGuard(), IncidentState.INVESTIGATING, EnumSet.of(Transition.SideEffect.LOG));
+        addRule(IncidentState.DETECTED, IncidentEvent.WorkloadDeleted.class, noGuard(), IncidentState.CANCELLED, EnumSet.of(Transition.SideEffect.LOG));
+        addRule(IncidentState.DETECTED, IncidentEvent.Recurrence.class, noGuard(), IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG));
+        
+        // INVESTIGATING
+        addRule(IncidentState.INVESTIGATING, IncidentEvent.EvidenceGathered.class, noGuard(), IncidentState.DIAGNOSING, EnumSet.of(Transition.SideEffect.STORE_EVIDENCE, Transition.SideEffect.RESET_TRANSIENT_RETRIES));
+        addRule(IncidentState.INVESTIGATING, IncidentEvent.K8sReadFailed.class, transientBelowLimit(), IncidentState.INVESTIGATING, EnumSet.of(Transition.SideEffect.INCREMENT_TRANSIENT_RETRY));
+        addRule(IncidentState.INVESTIGATING, IncidentEvent.K8sReadFailed.class, transientAtLimit(), IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG));
+        addRule(IncidentState.INVESTIGATING, IncidentEvent.Timeout.class, noGuard(), IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG));
+        addRule(IncidentState.INVESTIGATING, IncidentEvent.WorkloadDeleted.class, noGuard(), IncidentState.CANCELLED, EnumSet.of(Transition.SideEffect.LOG));
+
+        // DIAGNOSING
+        addRule(IncidentState.DIAGNOSING, IncidentEvent.ProposalAccepted.class, noGuard(), IncidentState.AWAITING_APPROVAL, EnumSet.of(Transition.SideEffect.STORE_PROPOSAL, Transition.SideEffect.RESET_TRANSIENT_RETRIES));
+        addRule(IncidentState.DIAGNOSING, IncidentEvent.LlmFailed.class, transientBelowLimit(), IncidentState.DIAGNOSING, EnumSet.of(Transition.SideEffect.INCREMENT_TRANSIENT_RETRY));
+        addRule(IncidentState.DIAGNOSING, IncidentEvent.LlmFailed.class, transientAtLimit(), IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG));
+        addRule(IncidentState.DIAGNOSING, IncidentEvent.LlmInvalid.class, transientBelowLimit(), IncidentState.DIAGNOSING, EnumSet.of(Transition.SideEffect.INCREMENT_TRANSIENT_RETRY));
+        addRule(IncidentState.DIAGNOSING, IncidentEvent.LlmInvalid.class, transientAtLimit(), IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG));
+        addRule(IncidentState.DIAGNOSING, IncidentEvent.PolicyDenied.class, noGuard(), IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG));
+        addRule(IncidentState.DIAGNOSING, IncidentEvent.Timeout.class, noGuard(), IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG));
+        addRule(IncidentState.DIAGNOSING, IncidentEvent.WorkloadDeleted.class, noGuard(), IncidentState.CANCELLED, EnumSet.of(Transition.SideEffect.LOG));
+
+        // AWAITING_APPROVAL
+        addRule(IncidentState.AWAITING_APPROVAL, IncidentEvent.Approved.class, approvalValid(), IncidentState.REMEDIATING, EnumSet.of(Transition.SideEffect.CREATE_INTENT, Transition.SideEffect.RESET_TRANSIENT_RETRIES));
+        addRule(IncidentState.AWAITING_APPROVAL, IncidentEvent.Rejected.class, noGuard(), IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG));
+        addRule(IncidentState.AWAITING_APPROVAL, IncidentEvent.Timeout.class, noGuard(), IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG));
+        addRule(IncidentState.AWAITING_APPROVAL, IncidentEvent.WorkloadDeleted.class, noGuard(), IncidentState.CANCELLED, EnumSet.of(Transition.SideEffect.LOG));
+
+        // REMEDIATING
+        addRule(IncidentState.REMEDIATING, IncidentEvent.ExecutionPolicyDenied.class, noGuard(), IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.TERMINATE_INTENT));
+        addRule(IncidentState.REMEDIATING, IncidentEvent.Conflict.class, attemptBelowLimit(), IncidentState.INVESTIGATING, EnumSet.of(Transition.SideEffect.INCREMENT_ATTEMPT, Transition.SideEffect.TERMINATE_INTENT, Transition.SideEffect.RESET_TRANSIENT_RETRIES)); // Added RESET_TRANSIENT_RETRIES
+        addRule(IncidentState.REMEDIATING, IncidentEvent.Conflict.class, attemptAtLimit(), IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.TERMINATE_INTENT));
+        addRule(IncidentState.REMEDIATING, IncidentEvent.PatchFailed.class, transientBelowLimit(), IncidentState.REMEDIATING, EnumSet.of(Transition.SideEffect.INCREMENT_TRANSIENT_RETRY));
+        addRule(IncidentState.REMEDIATING, IncidentEvent.PatchFailed.class, transientAtLimit(), IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.TERMINATE_INTENT));
+        addRule(IncidentState.REMEDIATING, IncidentEvent.Applied.class, noGuard(), IncidentState.VERIFYING, EnumSet.of(Transition.SideEffect.MARK_INTENT_APPLIED, Transition.SideEffect.RESET_TRANSIENT_RETRIES));
+        addRule(IncidentState.REMEDIATING, IncidentEvent.ReconcileResume.class, noGuard(), IncidentState.VERIFYING, EnumSet.of(Transition.SideEffect.SYNC_INTENT_STATE));
+        addRule(IncidentState.REMEDIATING, IncidentEvent.Timeout.class, noGuard(), IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.TERMINATE_INTENT));
+        addRule(IncidentState.REMEDIATING, IncidentEvent.WorkloadDeleted.class, noGuard(), IncidentState.CANCELLED, EnumSet.of(Transition.SideEffect.TERMINATE_INTENT));
+
+        // VERIFYING
+        addRule(IncidentState.VERIFYING, IncidentEvent.Verified.class, noGuard(), IncidentState.RESOLVED, EnumSet.of(Transition.SideEffect.LOG));
+        addRule(IncidentState.VERIFYING, IncidentEvent.VerificationFailed.class, noGuard(), IncidentState.REFLECTING, EnumSet.of(Transition.SideEffect.LOG));
+        addRule(IncidentState.VERIFYING, IncidentEvent.Timeout.class, noGuard(), IncidentState.REFLECTING, EnumSet.of(Transition.SideEffect.LOG));
+        addRule(IncidentState.VERIFYING, IncidentEvent.WorkloadDeleted.class, noGuard(), IncidentState.CANCELLED, EnumSet.of(Transition.SideEffect.LOG));
+        addRule(IncidentState.VERIFYING, IncidentEvent.Recurrence.class, noGuard(), IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG));
+
+        // REFLECTING
+        addRule(IncidentState.REFLECTING, IncidentEvent.ReflectionCompleted.class, attemptBelowLimit(), IncidentState.INVESTIGATING, EnumSet.of(Transition.SideEffect.INCREMENT_ATTEMPT, Transition.SideEffect.RESET_TRANSIENT_RETRIES));
+        addRule(IncidentState.REFLECTING, IncidentEvent.ReflectionCompleted.class, attemptAtLimit(), IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG));
+    }
+
+    private static void addRule(IncidentState from, Class<? extends IncidentEvent> eventType, Guard guard, IncidentState to, Set<Transition.SideEffect> sideEffects) {
+        RULES.add(new Rule(from, eventType, guard, to, sideEffects));
+    }
+
+    private static Guard noGuard() {
+        return new Guard() {
+            @Override public boolean test(Incident incident, IncidentEvent event, FsmConfig config, Clock clock) { return true; }
+            @Override public String description() { return "None"; }
         };
     }
 
-    private static Transition handleDetected(Incident incident, IncidentEvent event, FsmConfig config) {
-        if (event instanceof IncidentEvent.ProcessingStarted) {
-            return new Transition(IncidentState.INVESTIGATING, Transition.SideEffect.NONE);
-        } else if (event instanceof IncidentEvent.WorkloadDeleted) {
-            return new Transition(IncidentState.CANCELLED, Transition.SideEffect.LOG);
-        }
-        throw illegal(incident, event);
+    private static Guard transientBelowLimit() {
+        return new Guard() {
+            @Override public boolean test(Incident incident, IncidentEvent event, FsmConfig config, Clock clock) { return incident.transientRetries() < config.maxTransientRetries(); }
+            @Override public String description() { return "transientRetries < maxTransientRetries"; }
+        };
     }
 
-    private static Transition handleInvestigating(Incident incident, IncidentEvent event, FsmConfig config) {
-        if (event instanceof IncidentEvent.EvidenceGathered) {
-            return new Transition(IncidentState.DIAGNOSING, Transition.SideEffect.STORE_EVIDENCE);
-        } else if (event instanceof IncidentEvent.K8sReadFailed) {
-            if (incident.transientRetries() < config.maxTransientRetries()) {
-                return new Transition(IncidentState.INVESTIGATING, Transition.SideEffect.INCREMENT_TRANSIENT_RETRY);
+    private static Guard transientAtLimit() {
+        return new Guard() {
+            @Override public boolean test(Incident incident, IncidentEvent event, FsmConfig config, Clock clock) { return incident.transientRetries() >= config.maxTransientRetries(); }
+            @Override public String description() { return "transientRetries >= maxTransientRetries"; }
+        };
+    }
+
+    private static Guard attemptBelowLimit() {
+        return new Guard() {
+            @Override public boolean test(Incident incident, IncidentEvent event, FsmConfig config, Clock clock) { return incident.attempt() < config.maxAttempts(); }
+            @Override public String description() { return "attempt < maxAttempts"; }
+        };
+    }
+
+    private static Guard attemptAtLimit() {
+        return new Guard() {
+            @Override public boolean test(Incident incident, IncidentEvent event, FsmConfig config, Clock clock) { return incident.attempt() >= config.maxAttempts(); }
+            @Override public String description() { return "attempt >= maxAttempts"; }
+        };
+    }
+
+    private static Guard approvalValid() {
+        return new Guard() {
+            @Override public boolean test(Incident incident, IncidentEvent event, FsmConfig config, Clock clock) {
+                if (event instanceof IncidentEvent.Approved approved) {
+                    return !approved.approvedAt().plus(config.approvalTtl()).isBefore(clock.instant());
+                }
+                return false;
             }
-            return new Transition(IncidentState.ESCALATED, Transition.SideEffect.LOG);
-        } else if (event instanceof IncidentEvent.Timeout) {
-            return new Transition(IncidentState.ESCALATED, Transition.SideEffect.LOG);
-        } else if (event instanceof IncidentEvent.WorkloadDeleted) {
-            return new Transition(IncidentState.CANCELLED, Transition.SideEffect.LOG);
-        }
-        throw illegal(incident, event);
+            @Override public String description() { return "approval is not expired"; }
+        };
     }
 
-    private static Transition handleDiagnosing(Incident incident, IncidentEvent event, FsmConfig config) {
-        if (event instanceof IncidentEvent.ProposalAccepted) {
-            return new Transition(IncidentState.AWAITING_APPROVAL, Transition.SideEffect.STORE_PROPOSAL);
-        } else if (event instanceof IncidentEvent.LlmFailed) {
-            if (incident.transientRetries() < config.maxTransientRetries()) {
-                return new Transition(IncidentState.DIAGNOSING, Transition.SideEffect.INCREMENT_TRANSIENT_RETRY);
+    public static List<Rule> getRules() { return RULES; }
+
+    public static Transition decide(Incident incident, IncidentEvent event, FsmConfig config, Clock clock) {
+        for (Rule rule : RULES) {
+            if (rule.from() == incident.state() && rule.eventType().isInstance(event)) {
+                if (rule.guard().test(incident, event, config, clock)) {
+                    return new Transition(rule.to(), rule.sideEffects());
+                }
             }
-            return new Transition(IncidentState.ESCALATED, Transition.SideEffect.LOG);
-        } else if (event instanceof IncidentEvent.LlmInvalid || event instanceof IncidentEvent.PolicyDenied) {
-            return new Transition(IncidentState.ESCALATED, Transition.SideEffect.LOG);
-        } else if (event instanceof IncidentEvent.Timeout) {
-            return new Transition(IncidentState.ESCALATED, Transition.SideEffect.LOG);
-        } else if (event instanceof IncidentEvent.WorkloadDeleted) {
-            return new Transition(IncidentState.CANCELLED, Transition.SideEffect.LOG);
         }
-        throw illegal(incident, event);
-    }
-
-    private static Transition handleAwaitingApproval(Incident incident, IncidentEvent event, FsmConfig config, Clock clock) {
-        if (event instanceof IncidentEvent.Approved approved) {
-            if (approved.approvedUntil().isBefore(clock.instant())) {
-                throw new IllegalTransitionException(incident.state(), event, "Approval has expired");
-            }
-            return new Transition(IncidentState.REMEDIATING, Transition.SideEffect.CREATE_INTENT);
-        } else if (event instanceof IncidentEvent.Rejected || event instanceof IncidentEvent.Timeout) {
-            return new Transition(IncidentState.ESCALATED, Transition.SideEffect.LOG);
-        } else if (event instanceof IncidentEvent.WorkloadDeleted) {
-            return new Transition(IncidentState.CANCELLED, Transition.SideEffect.LOG);
-        }
-        throw illegal(incident, event);
-    }
-
-    private static Transition handleRemediating(Incident incident, IncidentEvent event, FsmConfig config) {
-        if (event instanceof IncidentEvent.ExecutionPolicyDenied) {
-            return new Transition(IncidentState.ESCALATED, Transition.SideEffect.TERMINATE_INTENT);
-        } else if (event instanceof IncidentEvent.Conflict) {
-            if (incident.attempt() < config.maxAttempts()) {
-                return new Transition(IncidentState.INVESTIGATING, Transition.SideEffect.INCREMENT_ATTEMPT);
-            }
-            return new Transition(IncidentState.ESCALATED, Transition.SideEffect.TERMINATE_INTENT);
-        } else if (event instanceof IncidentEvent.PatchFailed) {
-            if (incident.transientRetries() < config.maxTransientRetries()) {
-                return new Transition(IncidentState.REMEDIATING, Transition.SideEffect.INCREMENT_TRANSIENT_RETRY);
-            }
-            return new Transition(IncidentState.ESCALATED, Transition.SideEffect.TERMINATE_INTENT);
-        } else if (event instanceof IncidentEvent.Applied) {
-            return new Transition(IncidentState.VERIFYING, Transition.SideEffect.MARK_INTENT_APPLIED);
-        } else if (event instanceof IncidentEvent.ReconcileResume) {
-            return new Transition(IncidentState.VERIFYING, Transition.SideEffect.SYNC_INTENT_STATE);
-        } else if (event instanceof IncidentEvent.Timeout) {
-            return new Transition(IncidentState.ESCALATED, Transition.SideEffect.TERMINATE_INTENT);
-        } else if (event instanceof IncidentEvent.WorkloadDeleted) {
-            return new Transition(IncidentState.CANCELLED, Transition.SideEffect.TERMINATE_INTENT);
-        }
-        throw illegal(incident, event);
-    }
-
-    private static Transition handleVerifying(Incident incident, IncidentEvent event, FsmConfig config) {
-        if (event instanceof IncidentEvent.Verified) {
-            return new Transition(IncidentState.RESOLVED, Transition.SideEffect.LOG);
-        } else if (event instanceof IncidentEvent.VerificationFailed || event instanceof IncidentEvent.Timeout) {
-            return new Transition(IncidentState.REFLECTING, Transition.SideEffect.LOG);
-        } else if (event instanceof IncidentEvent.WorkloadDeleted) {
-            return new Transition(IncidentState.CANCELLED, Transition.SideEffect.LOG);
-        }
-        throw illegal(incident, event);
-    }
-
-    private static Transition handleReflecting(Incident incident, IncidentEvent event, FsmConfig config) {
-        if (event instanceof IncidentEvent.ReflectionCompleted) {
-            if (incident.attempt() < config.maxAttempts()) {
-                return new Transition(IncidentState.INVESTIGATING, Transition.SideEffect.INCREMENT_ATTEMPT);
-            }
-            return new Transition(IncidentState.ESCALATED, Transition.SideEffect.LOG);
-        }
-        throw illegal(incident, event);
-    }
-
-    private static IllegalTransitionException illegal(Incident incident, IncidentEvent event) {
-        return new IllegalTransitionException(incident.state(), event, "No valid transition rule matched");
+        throw new IllegalTransitionException(incident.state(), event, "No valid transition rule matched");
     }
 }

@@ -1,31 +1,42 @@
 package com.safeheal.incident;
 
 import org.junit.jupiter.api.Test;
-import java.io.File;
+
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.fail;
 
 class FsmDocumentationTest {
 
     @Test
     void transitionTableMatchesDocs() throws Exception {
         Path fsmDoc = Paths.get("docs/FSM.md");
-        String expectedContent = "# FSM Transition Table\n\n| Current State | Event | Next State |\n|---|---|---|\n";
-        // Dummy implementation for now, in a real scenario this would reflectively generate the table
         
-        if (System.getProperty("fsm.update") != null) {
-            Files.createDirectories(fsmDoc.getParent());
-            Files.writeString(fsmDoc, expectedContent);
-        } else {
-            if (!Files.exists(fsmDoc)) {
-                fail("docs/FSM.md does not exist. Run with -Dfsm.update=true to generate.");
-            }
-            String actualContent = Files.readString(fsmDoc);
-            assertEquals(expectedContent, actualContent, "docs/FSM.md is out of date. Run with -Dfsm.update=true to regenerate.");
+        StringBuilder expected = new StringBuilder();
+        expected.append("# FSM Transition Table\n\n");
+        expected.append("| Current State | Event | Guard | Next State | Side Effects |\n");
+        expected.append("|---|---|---|---|---|\n");
+        
+        for (FsmTransitionTable.Rule rule : FsmTransitionTable.getRules()) {
+            String sideEffectsStr = rule.sideEffects().stream()
+                .map(Enum::name)
+                .sorted()
+                .collect(Collectors.joining(", "));
+            
+            expected.append(String.format("| %s | %s | %s | %s | %s |\n",
+                rule.from().name(),
+                rule.eventType().getSimpleName(),
+                rule.guard().description(),
+                rule.to().name(),
+                sideEffectsStr
+            ));
         }
+        
+        String expectedContent = expected.toString();
+        String actualContent = Files.exists(fsmDoc) ? Files.readString(fsmDoc) : "";
+        assertEquals(expectedContent, actualContent, "docs/FSM.md is out of date. Please copy the expected string to docs/FSM.md.");
     }
 }
