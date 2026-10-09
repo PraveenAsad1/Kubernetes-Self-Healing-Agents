@@ -25,7 +25,7 @@ class JdbcIncidentRepositoryTest {
         .withDatabaseName("safeheal")
         .withUsername("safeheal_owner")
         .withPassword("owner_password")
-        .withInitScript("init-roles.sql");
+        .withCopyFileToContainer(org.testcontainers.utility.MountableFile.forHostPath("infra/postgres/init-roles.sql"), "/docker-entrypoint-initdb.d/init-roles.sql");
 
     @DynamicPropertySource
     static void registerProperties(DynamicPropertyRegistry registry) {
