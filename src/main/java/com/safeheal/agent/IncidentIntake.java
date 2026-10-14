@@ -5,13 +5,11 @@ import com.safeheal.incident.IncidentRepository;
 import com.safeheal.incident.IncidentState;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
-import java.util.Collections;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 public class IncidentIntake {
 
@@ -20,11 +18,27 @@ public class IncidentIntake {
     private final Clock clock;
     private final AuditRecorder auditRecorder;
 
-    // In-memory dedupe key (podUid, container, restartCount) in front of the DB
-    private final Set<DedupeKey> seenTerminations = Collections.newSetFromMap(new ConcurrentHashMap<>());
+    // Bounded in-memory dedupe structure (max 10_000 entries, expires after 2x recency window)
+    private final BoundedTtlMap<DedupeKey, Boolean> seenTerminations;
 
-    // Tracks cooldown window for which an audit event was already sent per workload (namespace/workloadUid -> cooldownUntil)
-    private final ConcurrentHashMap<String, Instant> workloadAuditSentForWindow = new ConcurrentHashMap<>();
+    // Bounded audit event tracker per workload window (max 10_000 entries)
+    private final BoundedTtlMap<String, Instant> workloadAuditSentForWindow;
+
+    public IncidentIntake(
+        IncidentRepository incidentRepository,
+        TriageRouter triageRouter,
+        Clock clock,
+        AuditRecorder auditRecorder,
+        Duration recencyWindow
+    ) {
+        this.incidentRepository = Objects.requireNonNull(incidentRepository, "incidentRepository must not be null");
+        this.triageRouter = Objects.requireNonNull(triageRouter, "triageRouter must not be null");
+        this.clock = Objects.requireNonNull(clock, "clock must not be null");
+        this.auditRecorder = auditRecorder != null ? auditRecorder : (id, event, payload, time) -> {};
+        Duration ttl = (recencyWindow != null ? recencyWindow : Duration.ofMinutes(10)).multipliedBy(2);
+        this.seenTerminations = new BoundedTtlMap<>(10_000, ttl, clock);
+        this.workloadAuditSentForWindow = new BoundedTtlMap<>(10_000, ttl, clock);
+    }
 
     public IncidentIntake(
         IncidentRepository incidentRepository,
@@ -32,25 +46,30 @@ public class IncidentIntake {
         Clock clock,
         AuditRecorder auditRecorder
     ) {
-        this.incidentRepository = Objects.requireNonNull(incidentRepository, "incidentRepository must not be null");
-        this.triageRouter = Objects.requireNonNull(triageRouter, "triageRouter must not be null");
-        this.clock = Objects.requireNonNull(clock, "clock must not be null");
-        this.auditRecorder = auditRecorder != null ? auditRecorder : (id, event, payload, time) -> {};
+        this(incidentRepository, triageRouter, clock, auditRecorder, Duration.ofMinutes(10));
     }
 
-    public Optional<Incident> intake(DetectedFailure failure, String podUid) {
+    public Optional<Incident> intake(DetectedFailure failure) {
         if (failure == null || failure.workload() == null || failure.termination() == null) {
             return Optional.empty();
         }
 
-        // 1. In-memory dedupe check
         DedupeKey dedupeKey = new DedupeKey(
-            podUid != null ? podUid : failure.podName(),
+            failure.podUid() != null ? failure.podUid() : failure.podName(),
             failure.containerName(),
             failure.termination().restartCount()
         );
-        if (!seenTerminations.add(dedupeKey)) {
-            // Already seen this termination event; silent no-op
+
+        // 1. In-memory dedupe check
+        if (seenTerminations.containsKey(dedupeKey)) {
+            return Optional.empty();
+        }
+
+        // 2. Triage before cooldown check
+        Optional<String> agentTypeOpt = triageRouter.route(failure);
+        if (agentTypeOpt.isEmpty()) {
+            // Outcome is final (not-OOM): record key and return empty
+            seenTerminations.put(dedupeKey, Boolean.TRUE);
             return Optional.empty();
         }
 
@@ -58,16 +77,14 @@ public class IncidentIntake {
         String namespace = failure.workload().namespace();
         String workloadUid = failure.workload().uid();
 
-        // 2. Cooldown check: call cooldownUntil(namespace, workloadUid) before create()
+        // 3. Cooldown check: call cooldownUntil(namespace, workloadUid) before create()
         Instant cooldownUntil = incidentRepository.cooldownUntil(namespace, workloadUid);
         if (cooldownUntil != null && now.isBefore(cooldownUntil)) {
-            // Inside cooldown: exactly ONE audit event per workload per window, NO incident row
+            // A cooldown-blocked termination is NOT recorded in dedupeKey
             String workloadKey = namespace + "/" + workloadUid;
-            Instant recordedWindow = workloadAuditSentForWindow.putIfAbsent(workloadKey, cooldownUntil);
+            Instant recordedWindow = workloadAuditSentForWindow.get(workloadKey);
             if (recordedWindow == null || !recordedWindow.equals(cooldownUntil)) {
-                if (recordedWindow != null) {
-                    workloadAuditSentForWindow.replace(workloadKey, recordedWindow, cooldownUntil);
-                }
+                workloadAuditSentForWindow.put(workloadKey, cooldownUntil);
                 auditRecorder.recordAuditEvent(
                     null,
                     "DETECTION_BLOCKED_COOLDOWN",
@@ -78,39 +95,45 @@ public class IncidentIntake {
             return Optional.empty();
         }
 
-        // 3. Triage routing
-        Optional<String> agentTypeOpt = triageRouter.route(failure);
-        if (agentTypeOpt.isEmpty()) {
+        // 4. Create incident: on any exception remove key and rethrow
+        try {
+            String incidentId = UUID.randomUUID().toString();
+            Incident incident = new Incident(
+                incidentId,
+                namespace,
+                workloadUid,
+                failure.workload().name(),
+                agentTypeOpt.get(),
+                IncidentState.DETECTED,
+                1,
+                0,
+                1,
+                null,
+                null,
+                now,
+                now,
+                null
+            );
+
+            IncidentRepository.CreateResult result = incidentRepository.create(incident);
+            if (result instanceof IncidentRepository.CreateResult.Duplicate) {
+                // Outcome is final (duplicate): record dedupeKey
+                seenTerminations.put(dedupeKey, Boolean.TRUE);
+                return Optional.empty();
+            } else if (result instanceof IncidentRepository.CreateResult.Created created) {
+                // Outcome is final (created): record dedupeKey
+                seenTerminations.put(dedupeKey, Boolean.TRUE);
+                return Optional.of(created.incident());
+            }
+
             return Optional.empty();
+        } catch (Throwable t) {
+            seenTerminations.remove(dedupeKey);
+            throw t;
         }
+    }
 
-        // 4. Create incident in DETECTED state
-        String incidentId = UUID.randomUUID().toString();
-        Incident incident = new Incident(
-            incidentId,
-            namespace,
-            workloadUid,
-            failure.workload().name(),
-            agentTypeOpt.get(),
-            IncidentState.DETECTED,
-            1,
-            0,
-            1,
-            null,
-            null,
-            now,
-            now,
-            null
-        );
-
-        IncidentRepository.CreateResult result = incidentRepository.create(incident);
-        if (result instanceof IncidentRepository.CreateResult.Duplicate) {
-            // A duplicate open incident exists for (namespace, workload_uid); silent no-op
-            return Optional.empty();
-        } else if (result instanceof IncidentRepository.CreateResult.Created created) {
-            return Optional.of(created.incident());
-        }
-
-        return Optional.empty();
+    int dedupeCacheSize() {
+        return seenTerminations.size();
     }
 }

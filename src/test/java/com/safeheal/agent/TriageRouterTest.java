@@ -19,7 +19,7 @@ class TriageRouterTest {
     void oomKilledRoutesToOom() {
         WorkloadRef workload = new WorkloadRef("prod", "Deployment", "web", "uid-1");
         ContainerTermination term = new ContainerTermination("app", "OOMKilled", 137, Instant.now(), 1);
-        DetectedFailure failure = new DetectedFailure(workload, "web-pod-1", "app", term, Instant.now());
+        DetectedFailure failure = new DetectedFailure(workload, "web-pod-1", "web-pod-1-uid", "app", term, Instant.now());
 
         Optional<String> agentType = router.route(failure);
         assertTrue(agentType.isPresent());
@@ -38,7 +38,7 @@ class TriageRouterTest {
     void nonOomFailuresIgnored(String reason, int exitCode) {
         WorkloadRef workload = new WorkloadRef("prod", "Deployment", "web", "uid-1");
         ContainerTermination term = new ContainerTermination("app", reason, exitCode, Instant.now(), 1);
-        DetectedFailure failure = new DetectedFailure(workload, "web-pod-1", "app", term, Instant.now());
+        DetectedFailure failure = new DetectedFailure(workload, "web-pod-1", "web-pod-1-uid", "app", term, Instant.now());
 
         Optional<String> agentType = router.route(failure);
         assertTrue(agentType.isEmpty(), "Expected non-OOM failure to be ignored for reason=" + reason + " exit=" + exitCode);

@@ -64,6 +64,7 @@ public class OomDetector {
                     return Optional.of(new DetectedFailure(
                         owner,
                         pod.name(),
+                        pod.uid(),
                         termination.containerName(),
                         termination,
                         now

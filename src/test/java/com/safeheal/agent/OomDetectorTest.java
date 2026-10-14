@@ -64,6 +64,7 @@ class OomDetectorTest {
         DetectedFailure failure = result.get();
         assertEquals(deployment, failure.workload());
         assertEquals("test-pod-xyz", failure.podName());
+        assertEquals("uid-pod-123", failure.podUid());
         assertEquals("app", failure.containerName());
         assertEquals(term, failure.termination());
         assertEquals(BASE_TIME, failure.detectedAt());
@@ -150,16 +151,27 @@ class OomDetectorTest {
         assertTrue(detector.detect(snapshot).isEmpty());
     }
 
-    @ParameterizedTest(name = "Hard denylisted namespace {0} must be rejected")
+    @ParameterizedTest(name = "Hard denylisted namespace {0} must be rejected even when allowlisted")
     @CsvSource({"kube-system", "kube-public", "kube-node-lease"})
     void hardDenylistedNamespacesAlwaysRejected(String denylistedNs) {
-        // Even if detector is constructed with the denylisted namespace explicitly in allowlist
-        OomDetector permissiveDetector = new OomDetector(fixedClock, Set.of(denylistedNs, "default"));
+        // Allowlist explicitly includes kube-system, kube-public, kube-node-lease and still rejects them
+        OomDetector permissiveDetector = new OomDetector(fixedClock, Set.of("kube-system", "kube-public", "kube-node-lease", "payments"));
         WorkloadRef deployment = new WorkloadRef(denylistedNs, "Deployment", "coredns", "dns-1");
         ContainerTermination term = new ContainerTermination("app", "OOMKilled", 137, BASE_TIME.minusSeconds(10), 1);
         PodSnapshot snapshot = createSnapshot(denylistedNs, deployment, List.of(term), List.of(), false);
 
         assertTrue(permissiveDetector.detect(snapshot).isEmpty());
+    }
+
+    @Test
+    @DisplayName("Mirror case: allowlisted and not denylisted namespace is accepted")
+    void allowlistedNotDenylistedNamespaceAccepted() {
+        OomDetector permissiveDetector = new OomDetector(fixedClock, Set.of("kube-system", "kube-public", "kube-node-lease", "payments"));
+        WorkloadRef deployment = new WorkloadRef("payments", "Deployment", "payments-app", "pay-1");
+        ContainerTermination term = new ContainerTermination("app", "OOMKilled", 137, BASE_TIME.minusSeconds(10), 1);
+        PodSnapshot snapshot = createSnapshot("payments", deployment, List.of(term), List.of(), false);
+
+        assertTrue(permissiveDetector.detect(snapshot).isPresent());
     }
 
     @Test
