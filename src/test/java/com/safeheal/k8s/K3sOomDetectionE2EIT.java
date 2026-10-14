@@ -1,8 +1,10 @@
 package com.safeheal.k8s;
 
 import com.safeheal.agent.AuditRecorder;
+import com.safeheal.agent.DetectedFailure;
 import com.safeheal.agent.IncidentIntake;
 import com.safeheal.agent.OomDetector;
+import com.safeheal.agent.PodSnapshot;
 import com.safeheal.agent.TriageRouter;
 import com.safeheal.config.ClusterContextGuard;
 import com.safeheal.config.SafeHealProperties;
@@ -13,7 +15,6 @@ import io.fabric8.kubernetes.api.model.ContainerBuilder;
 import io.fabric8.kubernetes.api.model.NamespaceBuilder;
 import io.fabric8.kubernetes.api.model.ObjectMetaBuilder;
 import io.fabric8.kubernetes.api.model.Pod;
-import io.fabric8.kubernetes.api.model.PodList;
 import io.fabric8.kubernetes.api.model.Quantity;
 import io.fabric8.kubernetes.api.model.ResourceRequirementsBuilder;
 import io.fabric8.kubernetes.api.model.apps.Deployment;
@@ -39,12 +40,13 @@ import org.testcontainers.utility.MountableFile;
 
 import java.time.Clock;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.*;
 
 @SpringBootTest
@@ -75,7 +77,7 @@ class K3sOomDetectionE2EIT {
         registry.add("spring.flyway.url", postgres::getJdbcUrl);
         registry.add("spring.flyway.user", () -> "safeheal_owner");
         registry.add("spring.flyway.password", () -> "owner_password");
-        registry.add("safeheal.mode", () -> "IN_CLUSTER"); // For app context boot in test
+        registry.add("safeheal.mode", () -> "IN_CLUSTER"); // For Spring context boot in test
     }
 
     @Autowired
@@ -90,13 +92,21 @@ class K3sOomDetectionE2EIT {
         Config config = Config.fromKubeconfig(kubeconfigYaml);
         client = new KubernetesClientBuilder().withConfig(config).build();
 
-        // Validate that K3s context passes ClusterContextGuard through configuration, not a bypass
         String activeContext = config.getCurrentContext() != null ? config.getCurrentContext().getName() : "default";
-        List<String> allowedContexts = List.of(activeContext, "kind-safeheal-dev");
+
+        // Assert startup FAILS when k3s context is not in allowlist
+        IllegalStateException ex = assertThrows(IllegalStateException.class, () -> ClusterContextGuard.validateContext(
+            SafeHealProperties.Mode.KUBECONFIG,
+            activeContext,
+            List.of("disallowed-context-999")
+        ));
+        assertTrue(ex.getMessage().contains("not in the allowlist"));
+
+        // Assert passes when allowed through configuration
         assertDoesNotThrow(() -> ClusterContextGuard.validateContext(
             SafeHealProperties.Mode.KUBECONFIG,
             activeContext,
-            allowedContexts
+            List.of(activeContext, "kind-safeheal-dev")
         ));
 
         // Create test namespace
@@ -117,7 +127,7 @@ class K3sOomDetectionE2EIT {
 
     @Test
     @DisplayName("E2E: OOMKilled workload creates exactly ONE incident; restart creates none; non-OOM creates none")
-    void oomKilledE2EFlow() throws Exception {
+    void oomKilledE2EFlow() {
         FabricClusterReader clusterReader = new FabricClusterReader(client);
         OomDetector detector = new OomDetector(
             Clock.systemUTC(),
@@ -143,7 +153,9 @@ class K3sOomDetectionE2EIT {
             detector,
             intake,
             Set.of(TEST_NS),
-            Clock.systemUTC()
+            Clock.systemUTC(),
+            Duration.ofSeconds(2), // 2s resync for fast E2E observation
+            Duration.ofMinutes(2)
         );
         informerSource.start();
 
@@ -162,7 +174,7 @@ class K3sOomDetectionE2EIT {
                         .withContainers(new ContainerBuilder()
                             .withName("oom-container")
                             .withImage(PINNED_IMAGE)
-                            // Allocates 10 million array strings in memory, exceeding 64Mi limit
+                            // Allocates array strings in memory until OOM
                             .withCommand("awk", "BEGIN{for(i=0;i<10000000;i++) a[i]=\"abcdefghijklmnopqrstuvwxyz\"}")
                             .withResources(new ResourceRequirementsBuilder()
                                 .withRequests(Map.of("memory", new Quantity("32Mi")))
@@ -176,50 +188,29 @@ class K3sOomDetectionE2EIT {
 
         client.apps().deployments().inNamespace(TEST_NS).resource(oomDeployment).create();
 
-        // 2. Wait for pod to be terminated with reason OOMKilled and exit 137
-        long deadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(90);
-        boolean oomObserved = false;
-        Pod oomPod = null;
-
-        while (System.currentTimeMillis() < deadline) {
-            PodList pods = client.pods().inNamespace(TEST_NS).withLabel("app", "oom-app").list();
-            if (!pods.getItems().isEmpty()) {
-                oomPod = pods.getItems().getFirst();
-                if (oomPod.getStatus() != null && oomPod.getStatus().getContainerStatuses() != null) {
-                    var status = oomPod.getStatus().getContainerStatuses().getFirst();
-                    var lastState = status.getLastState();
-                    var state = status.getState();
-                    if ((lastState != null && lastState.getTerminated() != null && "OOMKilled".equals(lastState.getTerminated().getReason()))
-                        || (state != null && state.getTerminated() != null && "OOMKilled".equals(state.getTerminated().getReason()))) {
-                        oomObserved = true;
-                        break;
-                    }
-                }
+        // 2. Awaitility: wait for pod to be terminated with OOMKilled and exit 137
+        await().atMost(90, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
+            var pods = client.pods().inNamespace(TEST_NS).withLabel("app", "oom-app").list().getItems();
+            if (pods.isEmpty()) return false;
+            Pod p = pods.getFirst();
+            if (p.getStatus() == null || p.getStatus().getContainerStatuses() == null || p.getStatus().getContainerStatuses().isEmpty()) {
+                return false;
             }
-            Thread.sleep(1000);
-        }
+            var status = p.getStatus().getContainerStatuses().getFirst();
+            var lastState = status.getLastState();
+            var state = status.getState();
+            return (lastState != null && lastState.getTerminated() != null && "OOMKilled".equals(lastState.getTerminated().getReason()))
+                || (state != null && state.getTerminated() != null && "OOMKilled".equals(state.getTerminated().getReason()));
+        });
 
-        assertTrue(oomObserved, "Expected pod to be OOMKilled within timeout");
-        assertNotNull(oomPod);
-
-        // Feed pod to informer directly in case of timing
-        informerSource.handlePod(client.pods().inNamespace(TEST_NS).withName(oomPod.getMetadata().getName()).get());
-
-        // 3. Assert exactly ONE incident is created in database
-        deadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(15);
-        int incidentCount = 0;
-        while (System.currentTimeMillis() < deadline) {
-            incidentCount = jdbcClient.sql("SELECT count(*) FROM incidents WHERE namespace = ? AND workload_name = ?")
+        // 3. Awaitility: wait for informer to automatically process the OOM pod and create exactly ONE incident in DB
+        await().atMost(15, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS).untilAsserted(() -> {
+            int count = jdbcClient.sql("SELECT count(*) FROM incidents WHERE namespace = ? AND workload_name = ?")
                 .params(TEST_NS, "oom-workload")
                 .query(Integer.class)
                 .single();
-            if (incidentCount == 1) {
-                break;
-            }
-            Thread.sleep(500);
-        }
-
-        assertEquals(1, incidentCount, "Expected exactly ONE incident created in DB for OOMKilled workload");
+            assertEquals(1, count);
+        });
 
         Incident created = jdbcClient.sql("SELECT * FROM incidents WHERE namespace = ? AND workload_name = ?")
             .params(TEST_NS, "oom-workload")
@@ -243,17 +234,37 @@ class K3sOomDetectionE2EIT {
         assertEquals(IncidentState.DETECTED, created.state());
         assertEquals("oom", created.agentType());
 
-        // 4. Second crash of the same workload: simulate another crash event
-        Pod updatedOomPod = client.pods().inNamespace(TEST_NS).withName(oomPod.getMetadata().getName()).get();
-        informerSource.handlePod(updatedOomPod);
+        // 4. Second crash: wait until restartCount increases (a real second OOM crash)
+        await().atMost(90, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
+            var pods = client.pods().inNamespace(TEST_NS).withLabel("app", "oom-app").list().getItems();
+            if (pods.isEmpty()) return false;
+            var status = pods.getFirst().getStatus().getContainerStatuses().getFirst();
+            return status.getRestartCount() != null && status.getRestartCount() >= 2;
+        });
 
+        // Assert still exactly ONE incident row in DB
         int countAfterSecondCrash = jdbcClient.sql("SELECT count(*) FROM incidents WHERE namespace = ? AND workload_name = ?")
             .params(TEST_NS, "oom-workload")
             .query(Integer.class)
             .single();
-        assertEquals(1, countAfterSecondCrash, "Second crash must NOT create a second incident row");
+        assertEquals(1, countAfterSecondCrash, "Second real OOM crash must NOT create a second incident row");
 
-        // 5. Deploy non-OOM crashing workload (sh -c 'exit 1')
+        // 5. Test using a FRESH IncidentIntake (empty dedupe) against the same DB asserting unique index yields Duplicate
+        Pod currentOomPod = client.pods().inNamespace(TEST_NS).withLabel("app", "oom-app").list().getItems().getFirst();
+        PodSnapshot snapshot = clusterReader.toSnapshot(currentOomPod);
+        DetectedFailure failure = detector.detect(snapshot).orElseThrow();
+
+        IncidentIntake freshIntake = new IncidentIntake(repository, new TriageRouter(), Clock.systemUTC(), null);
+        Optional<Incident> duplicateResult = freshIntake.intake(failure);
+        assertTrue(duplicateResult.isEmpty(), "Fresh intake against existing active workload must yield Duplicate from DB and return empty");
+
+        int totalIncidentCount = jdbcClient.sql("SELECT count(*) FROM incidents WHERE namespace = ? AND workload_name = ?")
+            .params(TEST_NS, "oom-workload")
+            .query(Integer.class)
+            .single();
+        assertEquals(1, totalIncidentCount, "Database unique index must keep count at exactly 1");
+
+        // 6. Deploy non-OOM crashing workload (sh -c 'exit 1')
         Deployment nonOomDeployment = new DeploymentBuilder()
             .withMetadata(new ObjectMetaBuilder().withName("non-oom-workload").withNamespace(TEST_NS).build())
             .withSpec(new io.fabric8.kubernetes.api.model.apps.DeploymentSpecBuilder()
@@ -277,27 +288,19 @@ class K3sOomDetectionE2EIT {
 
         client.apps().deployments().inNamespace(TEST_NS).resource(nonOomDeployment).create();
 
-        // Wait for non-OOM pod to crash
-        deadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(45);
-        Pod nonOomPod = null;
-        while (System.currentTimeMillis() < deadline) {
-            PodList pods = client.pods().inNamespace(TEST_NS).withLabel("app", "non-oom-app").list();
-            if (!pods.getItems().isEmpty()) {
-                nonOomPod = pods.getItems().getFirst();
-                if (nonOomPod.getStatus() != null && nonOomPod.getStatus().getContainerStatuses() != null) {
-                    var status = nonOomPod.getStatus().getContainerStatuses().getFirst();
-                    if (status.getRestartCount() != null && status.getRestartCount() >= 1) {
-                        break;
-                    }
-                }
+        // Wait with Awaitility for non-OOM pod to crash
+        await().atMost(45, TimeUnit.SECONDS).pollInterval(1, TimeUnit.SECONDS).until(() -> {
+            var pods = client.pods().inNamespace(TEST_NS).withLabel("app", "non-oom-app").list().getItems();
+            if (pods.isEmpty()) return false;
+            Pod p = pods.getFirst();
+            if (p.getStatus() == null || p.getStatus().getContainerStatuses() == null || p.getStatus().getContainerStatuses().isEmpty()) {
+                return false;
             }
-            Thread.sleep(1000);
-        }
+            var status = p.getStatus().getContainerStatuses().getFirst();
+            return status.getRestartCount() != null && status.getRestartCount() >= 1;
+        });
 
-        assertNotNull(nonOomPod);
-        informerSource.handlePod(client.pods().inNamespace(TEST_NS).withName(nonOomPod.getMetadata().getName()).get());
-
-        // 6. Assert non-OOM workload creates ZERO incidents
+        // 7. Assert non-OOM workload creates ZERO incidents
         int nonOomCount = jdbcClient.sql("SELECT count(*) FROM incidents WHERE namespace = ? AND workload_name = ?")
             .params(TEST_NS, "non-oom-workload")
             .query(Integer.class)
