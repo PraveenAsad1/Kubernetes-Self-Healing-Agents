@@ -35,7 +35,10 @@ dependencies {
 
 tasks.withType<Test> {
     useJUnitPlatform()
-    if (System.getProperty("fsm.update") != null) {
-        systemProperty("fsm.update", System.getProperty("fsm.update"))
-    }
+}
+
+
+tasks.register<JavaExec>("generateFsmDocs") {
+    mainClass.set("com.safeheal.incident.FsmDocGenerator")
+    classpath = sourceSets["test"].runtimeClasspath
 }
