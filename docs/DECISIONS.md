@@ -77,3 +77,12 @@
 3. **Cooldown & Audit Events:** `IncidentIntake` checks `cooldownUntil(namespace, workloadUid)` before `create()`. Inside cooldown, no incident row is created and exactly one audit event is recorded per workload per cooldown window. Recurrence evaluation and hourly cap enforcement are deferred to Phase 3.
 4. **Redactor Defense-in-Depth:** Redactor applies a 256 KB pre-cap, followed by regex passes (opaque bearer tokens, JSON-quoted keys, case-sensitive AWS keys, full and truncated PEM blocks), preserving prompt injection lines verbatim, before applying a 50 KB tail-preserving cap.
 5. **Typed Port Failures:** `ClusterReader` throws typed domain exception `ClusterReadException`, which `EvidenceCollector` propagates without swallowing.
+
+## ADR 23: Detection Reliability & Informer Lifecycle Guarantees
+**Context:** Review of Phase 2 detection reliability identified edge cases around unbounded deduplication maps, unhandled resync retries, and unconfigured namespace informers.
+**Decision:**
+1. **Fail-Closed Allowlist:** If `allowlistedNamespaces` is empty, `PodInformerSource` fails closed by watching nothing and logging a warning. It never defaults to `inAnyNamespace`.
+2. **Deduplication Bounds & Eviction:** In-memory `DedupeKey` and workload audit event caches are bounded at 10,000 entries and evicted after `2 * recencyWindow` using an access-ordered LRU/TTL map (`BoundedTtlMap`) with zero external dependencies.
+3. **Informer Resync:** `PodInformerSource` configures a periodic resync interval (default 60 s) to ensure transient intake failures are retried.
+4. **Init-Container Limitation:** Init-container crashes remain excluded from detection; Agent 1 strictly manages deployment application containers.
+5. **Phase 3 Deferrals:** Recurrence (2nd OOM in 24h bypassing cooldown) and cluster-wide hourly cap enforcement arrive in Phase 3.
