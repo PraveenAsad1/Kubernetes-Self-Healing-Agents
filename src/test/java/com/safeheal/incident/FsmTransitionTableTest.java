@@ -29,57 +29,80 @@ class FsmTransitionTableTest {
         return new Incident("test-id", "default", "uid-1", "test-pod", "test-agent", state, attempt, transientRetries, 1, null, null, clock.instant(), clock.instant(), state.isTerminal() ? clock.instant() : null);
     }
 
-    // Golden table from docs/ARCHITECTURE.md
     record Expected(IncidentState nextState, Set<Transition.SideEffect> sideEffects) {}
     
-    private static Map<IncidentState, Map<Class<?>, Expected>> GOLDEN_TABLE = new HashMap<>();
+    private static Map<IncidentState, Map<Class<?>, Expected>> GOLDEN_BELOW = new HashMap<>();
+    private static Map<IncidentState, Map<Class<?>, Expected>> GOLDEN_AT = new HashMap<>();
     
     static {
-        for (IncidentState s : IncidentState.values()) GOLDEN_TABLE.put(s, new HashMap<>());
+        for (IncidentState s : IncidentState.values()) {
+            GOLDEN_BELOW.put(s, new HashMap<>());
+            GOLDEN_AT.put(s, new HashMap<>());
+        }
         
         // DETECTED
-        GOLDEN_TABLE.get(IncidentState.DETECTED).put(IncidentEvent.ProcessingStarted.class, new Expected(IncidentState.INVESTIGATING, EnumSet.of(Transition.SideEffect.LOG)));
-        GOLDEN_TABLE.get(IncidentState.DETECTED).put(IncidentEvent.WorkloadDeleted.class, new Expected(IncidentState.CANCELLED, EnumSet.of(Transition.SideEffect.LOG)));
-        GOLDEN_TABLE.get(IncidentState.DETECTED).put(IncidentEvent.Recurrence.class, new Expected(IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG)));
+        addG(IncidentState.DETECTED, IncidentEvent.ProcessingStarted.class, IncidentState.INVESTIGATING, EnumSet.of(Transition.SideEffect.LOG));
+        addG(IncidentState.DETECTED, IncidentEvent.WorkloadDeleted.class, IncidentState.CANCELLED, EnumSet.of(Transition.SideEffect.LOG, Transition.SideEffect.CLOSE_INCIDENT));
+        addG(IncidentState.DETECTED, IncidentEvent.Recurrence.class, IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG, Transition.SideEffect.CLOSE_INCIDENT));
+        addG(IncidentState.DETECTED, IncidentEvent.Timeout.class, IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG, Transition.SideEffect.CLOSE_INCIDENT));
 
         // INVESTIGATING
-        GOLDEN_TABLE.get(IncidentState.INVESTIGATING).put(IncidentEvent.EvidenceGathered.class, new Expected(IncidentState.DIAGNOSING, EnumSet.of(Transition.SideEffect.STORE_EVIDENCE, Transition.SideEffect.RESET_TRANSIENT_RETRIES)));
-        GOLDEN_TABLE.get(IncidentState.INVESTIGATING).put(IncidentEvent.K8sReadFailed.class, new Expected(IncidentState.INVESTIGATING, EnumSet.of(Transition.SideEffect.INCREMENT_TRANSIENT_RETRY))); // default case
-        GOLDEN_TABLE.get(IncidentState.INVESTIGATING).put(IncidentEvent.Timeout.class, new Expected(IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG)));
-        GOLDEN_TABLE.get(IncidentState.INVESTIGATING).put(IncidentEvent.WorkloadDeleted.class, new Expected(IncidentState.CANCELLED, EnumSet.of(Transition.SideEffect.LOG)));
+        addG(IncidentState.INVESTIGATING, IncidentEvent.EvidenceGathered.class, IncidentState.DIAGNOSING, EnumSet.of(Transition.SideEffect.STORE_EVIDENCE, Transition.SideEffect.RESET_TRANSIENT_RETRIES));
+        addGBelow(IncidentState.INVESTIGATING, IncidentEvent.K8sReadFailed.class, IncidentState.INVESTIGATING, EnumSet.of(Transition.SideEffect.INCREMENT_TRANSIENT_RETRY));
+        addGAt(IncidentState.INVESTIGATING, IncidentEvent.K8sReadFailed.class, IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG, Transition.SideEffect.CLOSE_INCIDENT));
+        addG(IncidentState.INVESTIGATING, IncidentEvent.Timeout.class, IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG, Transition.SideEffect.CLOSE_INCIDENT));
+        addG(IncidentState.INVESTIGATING, IncidentEvent.WorkloadDeleted.class, IncidentState.CANCELLED, EnumSet.of(Transition.SideEffect.LOG, Transition.SideEffect.CLOSE_INCIDENT));
 
         // DIAGNOSING
-        GOLDEN_TABLE.get(IncidentState.DIAGNOSING).put(IncidentEvent.ProposalAccepted.class, new Expected(IncidentState.AWAITING_APPROVAL, EnumSet.of(Transition.SideEffect.STORE_PROPOSAL, Transition.SideEffect.RESET_TRANSIENT_RETRIES)));
-        GOLDEN_TABLE.get(IncidentState.DIAGNOSING).put(IncidentEvent.LlmFailed.class, new Expected(IncidentState.DIAGNOSING, EnumSet.of(Transition.SideEffect.INCREMENT_TRANSIENT_RETRY)));
-        GOLDEN_TABLE.get(IncidentState.DIAGNOSING).put(IncidentEvent.LlmInvalid.class, new Expected(IncidentState.DIAGNOSING, EnumSet.of(Transition.SideEffect.INCREMENT_TRANSIENT_RETRY)));
-        GOLDEN_TABLE.get(IncidentState.DIAGNOSING).put(IncidentEvent.PolicyDenied.class, new Expected(IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG)));
-        GOLDEN_TABLE.get(IncidentState.DIAGNOSING).put(IncidentEvent.Timeout.class, new Expected(IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG)));
-        GOLDEN_TABLE.get(IncidentState.DIAGNOSING).put(IncidentEvent.WorkloadDeleted.class, new Expected(IncidentState.CANCELLED, EnumSet.of(Transition.SideEffect.LOG)));
+        addG(IncidentState.DIAGNOSING, IncidentEvent.ProposalAccepted.class, IncidentState.AWAITING_APPROVAL, EnumSet.of(Transition.SideEffect.STORE_PROPOSAL, Transition.SideEffect.RESET_TRANSIENT_RETRIES));
+        addGBelow(IncidentState.DIAGNOSING, IncidentEvent.LlmFailed.class, IncidentState.DIAGNOSING, EnumSet.of(Transition.SideEffect.INCREMENT_TRANSIENT_RETRY));
+        addGAt(IncidentState.DIAGNOSING, IncidentEvent.LlmFailed.class, IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG, Transition.SideEffect.CLOSE_INCIDENT));
+        addGBelow(IncidentState.DIAGNOSING, IncidentEvent.LlmInvalid.class, IncidentState.DIAGNOSING, EnumSet.of(Transition.SideEffect.INCREMENT_TRANSIENT_RETRY));
+        addGAt(IncidentState.DIAGNOSING, IncidentEvent.LlmInvalid.class, IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG, Transition.SideEffect.CLOSE_INCIDENT));
+        addG(IncidentState.DIAGNOSING, IncidentEvent.PolicyDenied.class, IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG, Transition.SideEffect.CLOSE_INCIDENT));
+        addG(IncidentState.DIAGNOSING, IncidentEvent.Timeout.class, IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG, Transition.SideEffect.CLOSE_INCIDENT));
+        addG(IncidentState.DIAGNOSING, IncidentEvent.WorkloadDeleted.class, IncidentState.CANCELLED, EnumSet.of(Transition.SideEffect.LOG, Transition.SideEffect.CLOSE_INCIDENT));
 
         // AWAITING_APPROVAL
-        GOLDEN_TABLE.get(IncidentState.AWAITING_APPROVAL).put(IncidentEvent.Approved.class, new Expected(IncidentState.REMEDIATING, EnumSet.of(Transition.SideEffect.CREATE_INTENT, Transition.SideEffect.RESET_TRANSIENT_RETRIES)));
-        GOLDEN_TABLE.get(IncidentState.AWAITING_APPROVAL).put(IncidentEvent.Rejected.class, new Expected(IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG)));
-        GOLDEN_TABLE.get(IncidentState.AWAITING_APPROVAL).put(IncidentEvent.Timeout.class, new Expected(IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG)));
-        GOLDEN_TABLE.get(IncidentState.AWAITING_APPROVAL).put(IncidentEvent.WorkloadDeleted.class, new Expected(IncidentState.CANCELLED, EnumSet.of(Transition.SideEffect.LOG)));
+        addGBelow(IncidentState.AWAITING_APPROVAL, IncidentEvent.Approved.class, IncidentState.REMEDIATING, EnumSet.of(Transition.SideEffect.CREATE_INTENT, Transition.SideEffect.RESET_TRANSIENT_RETRIES));
+        addG(IncidentState.AWAITING_APPROVAL, IncidentEvent.Rejected.class, IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG, Transition.SideEffect.CLOSE_INCIDENT));
+        addG(IncidentState.AWAITING_APPROVAL, IncidentEvent.Timeout.class, IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG, Transition.SideEffect.CLOSE_INCIDENT));
+        addG(IncidentState.AWAITING_APPROVAL, IncidentEvent.WorkloadDeleted.class, IncidentState.CANCELLED, EnumSet.of(Transition.SideEffect.LOG, Transition.SideEffect.CLOSE_INCIDENT));
 
         // REMEDIATING
-        GOLDEN_TABLE.get(IncidentState.REMEDIATING).put(IncidentEvent.ExecutionPolicyDenied.class, new Expected(IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.TERMINATE_INTENT)));
-        GOLDEN_TABLE.get(IncidentState.REMEDIATING).put(IncidentEvent.Conflict.class, new Expected(IncidentState.INVESTIGATING, EnumSet.of(Transition.SideEffect.INCREMENT_ATTEMPT, Transition.SideEffect.TERMINATE_INTENT, Transition.SideEffect.RESET_TRANSIENT_RETRIES)));
-        GOLDEN_TABLE.get(IncidentState.REMEDIATING).put(IncidentEvent.PatchFailed.class, new Expected(IncidentState.REMEDIATING, EnumSet.of(Transition.SideEffect.INCREMENT_TRANSIENT_RETRY)));
-        GOLDEN_TABLE.get(IncidentState.REMEDIATING).put(IncidentEvent.Applied.class, new Expected(IncidentState.VERIFYING, EnumSet.of(Transition.SideEffect.MARK_INTENT_APPLIED, Transition.SideEffect.RESET_TRANSIENT_RETRIES)));
-        GOLDEN_TABLE.get(IncidentState.REMEDIATING).put(IncidentEvent.ReconcileResume.class, new Expected(IncidentState.VERIFYING, EnumSet.of(Transition.SideEffect.SYNC_INTENT_STATE)));
-        GOLDEN_TABLE.get(IncidentState.REMEDIATING).put(IncidentEvent.Timeout.class, new Expected(IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.TERMINATE_INTENT)));
-        GOLDEN_TABLE.get(IncidentState.REMEDIATING).put(IncidentEvent.WorkloadDeleted.class, new Expected(IncidentState.CANCELLED, EnumSet.of(Transition.SideEffect.TERMINATE_INTENT)));
+        addG(IncidentState.REMEDIATING, IncidentEvent.ExecutionPolicyDenied.class, IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.TERMINATE_INTENT, Transition.SideEffect.CLOSE_INCIDENT));
+        addGBelow(IncidentState.REMEDIATING, IncidentEvent.Conflict.class, IncidentState.INVESTIGATING, EnumSet.of(Transition.SideEffect.INCREMENT_ATTEMPT, Transition.SideEffect.TERMINATE_INTENT, Transition.SideEffect.RESET_TRANSIENT_RETRIES, Transition.SideEffect.VOID_APPROVAL));
+        addGAt(IncidentState.REMEDIATING, IncidentEvent.Conflict.class, IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.TERMINATE_INTENT, Transition.SideEffect.VOID_APPROVAL, Transition.SideEffect.CLOSE_INCIDENT));
+        addGBelow(IncidentState.REMEDIATING, IncidentEvent.PatchFailed.class, IncidentState.REMEDIATING, EnumSet.of(Transition.SideEffect.INCREMENT_TRANSIENT_RETRY));
+        addGAt(IncidentState.REMEDIATING, IncidentEvent.PatchFailed.class, IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.TERMINATE_INTENT, Transition.SideEffect.CLOSE_INCIDENT));
+        addG(IncidentState.REMEDIATING, IncidentEvent.Applied.class, IncidentState.VERIFYING, EnumSet.of(Transition.SideEffect.MARK_INTENT_APPLIED, Transition.SideEffect.RESET_TRANSIENT_RETRIES));
+        addG(IncidentState.REMEDIATING, IncidentEvent.ReconcileResume.class, IncidentState.VERIFYING, EnumSet.of(Transition.SideEffect.SYNC_INTENT_STATE));
+        addG(IncidentState.REMEDIATING, IncidentEvent.Timeout.class, IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.TERMINATE_INTENT, Transition.SideEffect.CLOSE_INCIDENT));
+        addG(IncidentState.REMEDIATING, IncidentEvent.WorkloadDeleted.class, IncidentState.CANCELLED, EnumSet.of(Transition.SideEffect.TERMINATE_INTENT, Transition.SideEffect.CLOSE_INCIDENT));
 
         // VERIFYING
-        GOLDEN_TABLE.get(IncidentState.VERIFYING).put(IncidentEvent.Verified.class, new Expected(IncidentState.RESOLVED, EnumSet.of(Transition.SideEffect.LOG)));
-        GOLDEN_TABLE.get(IncidentState.VERIFYING).put(IncidentEvent.VerificationFailed.class, new Expected(IncidentState.REFLECTING, EnumSet.of(Transition.SideEffect.LOG)));
-        GOLDEN_TABLE.get(IncidentState.VERIFYING).put(IncidentEvent.Timeout.class, new Expected(IncidentState.REFLECTING, EnumSet.of(Transition.SideEffect.LOG)));
-        GOLDEN_TABLE.get(IncidentState.VERIFYING).put(IncidentEvent.WorkloadDeleted.class, new Expected(IncidentState.CANCELLED, EnumSet.of(Transition.SideEffect.LOG)));
-        GOLDEN_TABLE.get(IncidentState.VERIFYING).put(IncidentEvent.Recurrence.class, new Expected(IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG)));
+        addG(IncidentState.VERIFYING, IncidentEvent.Verified.class, IncidentState.RESOLVED, EnumSet.of(Transition.SideEffect.LOG, Transition.SideEffect.CLOSE_INCIDENT));
+        addG(IncidentState.VERIFYING, IncidentEvent.VerificationFailed.class, IncidentState.REFLECTING, EnumSet.of(Transition.SideEffect.LOG));
+        addG(IncidentState.VERIFYING, IncidentEvent.Timeout.class, IncidentState.REFLECTING, EnumSet.of(Transition.SideEffect.LOG));
+        addG(IncidentState.VERIFYING, IncidentEvent.WorkloadDeleted.class, IncidentState.CANCELLED, EnumSet.of(Transition.SideEffect.LOG, Transition.SideEffect.CLOSE_INCIDENT));
+        addG(IncidentState.VERIFYING, IncidentEvent.Recurrence.class, IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG, Transition.SideEffect.CLOSE_INCIDENT));
 
         // REFLECTING
-        GOLDEN_TABLE.get(IncidentState.REFLECTING).put(IncidentEvent.ReflectionCompleted.class, new Expected(IncidentState.INVESTIGATING, EnumSet.of(Transition.SideEffect.INCREMENT_ATTEMPT, Transition.SideEffect.RESET_TRANSIENT_RETRIES)));
+        addGBelow(IncidentState.REFLECTING, IncidentEvent.ReflectionCompleted.class, IncidentState.INVESTIGATING, EnumSet.of(Transition.SideEffect.INCREMENT_ATTEMPT, Transition.SideEffect.RESET_TRANSIENT_RETRIES));
+        addGAt(IncidentState.REFLECTING, IncidentEvent.ReflectionCompleted.class, IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG, Transition.SideEffect.CLOSE_INCIDENT));
+        addG(IncidentState.REFLECTING, IncidentEvent.WorkloadDeleted.class, IncidentState.CANCELLED, EnumSet.of(Transition.SideEffect.LOG, Transition.SideEffect.CLOSE_INCIDENT));
+        addG(IncidentState.REFLECTING, IncidentEvent.Timeout.class, IncidentState.ESCALATED, EnumSet.of(Transition.SideEffect.LOG, Transition.SideEffect.CLOSE_INCIDENT));
+    }
+
+    private static void addG(IncidentState state, Class<?> clazz, IncidentState to, Set<Transition.SideEffect> effects) {
+        addGBelow(state, clazz, to, effects);
+        addGAt(state, clazz, to, effects);
+    }
+    private static void addGBelow(IncidentState state, Class<?> clazz, IncidentState to, Set<Transition.SideEffect> effects) {
+        GOLDEN_BELOW.get(state).put(clazz, new Expected(to, effects));
+    }
+    private static void addGAt(IncidentState state, Class<?> clazz, IncidentState to, Set<Transition.SideEffect> effects) {
+        GOLDEN_AT.get(state).put(clazz, new Expected(to, effects));
     }
 
     static Stream<Arguments> stateEventMatrix() {
@@ -108,7 +131,8 @@ class FsmTransitionTableTest {
         };
         for (IncidentState state : IncidentState.values()) {
             for (IncidentEvent event : allEvents) {
-                args.add(Arguments.of(state, event));
+                args.add(Arguments.of(state, event, false)); // below limit
+                args.add(Arguments.of(state, event, true));  // at limit
             }
         }
         return args.stream();
@@ -116,13 +140,24 @@ class FsmTransitionTableTest {
 
     @ParameterizedTest
     @MethodSource("stateEventMatrix")
-    void matrixGoldenTest(IncidentState state, IncidentEvent event) {
-        Incident incident = createIncident(state, 1, 0); // below limits, valid approval
-        Expected expected = GOLDEN_TABLE.get(state).get(event.getClass());
+    void matrixGoldenTest(IncidentState state, IncidentEvent event, boolean atLimit) {
+        int attempt = atLimit ? config.maxAttempts() : 1;
+        int transientRetries = atLimit ? config.maxTransientRetries() : 0;
+        
+        Incident incident = createIncident(state, attempt, transientRetries);
+        Expected expected = atLimit ? GOLDEN_AT.get(state).get(event.getClass()) : GOLDEN_BELOW.get(state).get(event.getClass());
+        
+        IncidentEvent finalEvent = event;
+        if (event instanceof IncidentEvent.Approved && atLimit) {
+            expected = null; // simulate expired approval for atLimit
+            finalEvent = new IncidentEvent.Approved("pid", "hash", "user", clock.instant().minus(config.approvalTtl()).minusSeconds(1));
+        }
+        
+        IncidentEvent eventToTest = finalEvent;
         if (expected == null) {
-            assertThrows(IllegalTransitionException.class, () -> FsmTransitionTable.decide(incident, event, config, clock));
+            assertThrows(IllegalTransitionException.class, () -> FsmTransitionTable.decide(incident, eventToTest, config, clock));
         } else {
-            Transition t = FsmTransitionTable.decide(incident, event, config, clock);
+            Transition t = FsmTransitionTable.decide(incident, eventToTest, config, clock);
             assertEquals(expected.nextState(), t.nextState());
             assertEquals(expected.sideEffects(), t.sideEffects());
         }
@@ -173,45 +208,37 @@ class FsmTransitionTableTest {
                 }
             }
             assertTrue(incident.state().isTerminal());
-            assertTrue(incident.attempt() <= config.maxAttempts(), "Attempt exceeded limit: " + incident.attempt());
-            assertTrue(incident.transientRetries() <= config.maxTransientRetries(), "Transient retries exceeded limit: " + incident.transientRetries());
+            assertEquals(incident.attempt() <= config.maxAttempts(), true, "Attempt exceeded limit: " + incident.attempt());
+            assertEquals(incident.transientRetries() <= config.maxTransientRetries(), true, "Transient retries exceeded limit: " + incident.transientRetries());
         }
     }
 
     @Test
-    void expiredApprovalRejected() {
-        Incident incident = createIncident(IncidentState.AWAITING_APPROVAL, 1, 0);
-        IncidentEvent.Approved expired = new IncidentEvent.Approved("pid", "hash", "user", clock.instant().minus(config.approvalTtl()).minusSeconds(1));
-        assertThrows(IllegalTransitionException.class, () -> FsmTransitionTable.decide(incident, expired, config, clock));
+    void testRuleImmutability() {
+        assertThrows(UnsupportedOperationException.class, () -> FsmTransitionTable.getRules().add(null));
+        if (!FsmTransitionTable.getRules().isEmpty()) {
+            assertThrows(UnsupportedOperationException.class, () -> FsmTransitionTable.getRules().get(0).sideEffects().add(Transition.SideEffect.LOG));
+        }
     }
     
     @Test
-    void approvalJustValid() {
-        Incident incident = createIncident(IncidentState.AWAITING_APPROVAL, 1, 0);
-        IncidentEvent.Approved valid = new IncidentEvent.Approved("pid", "hash", "user", clock.instant().minus(config.approvalTtl()));
-        Transition t = FsmTransitionTable.decide(incident, valid, config, clock);
-        assertEquals(IncidentState.REMEDIATING, t.nextState());
+    void testApprovalTtl() {
+        Incident i = createIncident(IncidentState.AWAITING_APPROVAL, 1, 0);
+        
+        // Exact TTL: should be accepted
+        IncidentEvent exactTtlEvent = new IncidentEvent.Approved("pid", "hash", "user", clock.instant().minus(config.approvalTtl()));
+        assertDoesNotThrow(() -> FsmTransitionTable.decide(i, exactTtlEvent, config, clock));
+        
+        // TTL + 1s: should be rejected
+        IncidentEvent expiredEvent = new IncidentEvent.Approved("pid", "hash", "user", clock.instant().minus(config.approvalTtl()).minusSeconds(1));
+        assertThrows(IllegalTransitionException.class, () -> FsmTransitionTable.decide(i, expiredEvent, config, clock));
     }
 
     @Test
-    void k8sReadFailedLimits() {
-        Incident incident = createIncident(IncidentState.INVESTIGATING, 1, config.maxTransientRetries() - 1);
-        Transition t1 = FsmTransitionTable.decide(incident, new IncidentEvent.K8sReadFailed(), config, clock);
-        assertEquals(IncidentState.INVESTIGATING, t1.nextState());
-        
-        Incident limitIncident = createIncident(IncidentState.INVESTIGATING, 1, config.maxTransientRetries());
-        Transition t2 = FsmTransitionTable.decide(limitIncident, new IncidentEvent.K8sReadFailed(), config, clock);
-        assertEquals(IncidentState.ESCALATED, t2.nextState());
-    }
-    
-    @Test
-    void conflictLimits() {
-        Incident incident = createIncident(IncidentState.REMEDIATING, config.maxAttempts() - 1, 0);
-        Transition t1 = FsmTransitionTable.decide(incident, new IncidentEvent.Conflict(), config, clock);
-        assertEquals(IncidentState.INVESTIGATING, t1.nextState());
-        
-        Incident limitIncident = createIncident(IncidentState.REMEDIATING, config.maxAttempts(), 0);
-        Transition t2 = FsmTransitionTable.decide(limitIncident, new IncidentEvent.Conflict(), config, clock);
-        assertEquals(IncidentState.ESCALATED, t2.nextState());
+    void testConfigValidation() {
+        assertThrows(IllegalArgumentException.class, () -> new FsmConfig(0, 2, Duration.ofMinutes(30)));
+        assertThrows(IllegalArgumentException.class, () -> new FsmConfig(3, -1, Duration.ofMinutes(30)));
+        assertThrows(IllegalArgumentException.class, () -> new FsmConfig(3, 2, Duration.ZERO));
+        assertThrows(IllegalArgumentException.class, () -> new FsmConfig(3, 2, Duration.ofMinutes(-1)));
     }
 }
