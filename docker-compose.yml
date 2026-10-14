@@ -10,4 +10,4 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - ./src/test/resources/init-roles.sql:/docker-entrypoint-initdb.d/init-roles.sql
+      - ./infra/postgres/init-roles.sql:/docker-entrypoint-initdb.d/init-roles.sql
