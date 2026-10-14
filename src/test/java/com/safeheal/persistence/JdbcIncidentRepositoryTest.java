@@ -2,6 +2,7 @@ package com.safeheal.persistence;
 
 import com.safeheal.incident.Incident;
 import com.safeheal.incident.IncidentEvent;
+import com.safeheal.incident.IncidentRepository;
 import com.safeheal.incident.IncidentState;
 import com.safeheal.incident.Transition;
 import org.junit.jupiter.api.Test;
@@ -96,12 +97,21 @@ class JdbcIncidentRepositoryTest {
         assertAccessDenied(() -> jdbcClient.sql("TRUNCATE TABLE audit_events").update());
     }
 
+    private Incident createAndGet(Incident i) {
+        IncidentRepository.CreateResult res = repository.create(i);
+        assertInstanceOf(IncidentRepository.CreateResult.Created.class, res);
+        return ((IncidentRepository.CreateResult.Created) res).incident();
+    }
+
     @Test
     void uniqueIndexRejected() {
         Incident i1 = createIncident("u1", "ns1", "uid1", IncidentState.DETECTED);
-        repository.create(i1);
+        IncidentRepository.CreateResult r1 = repository.create(i1);
+        assertInstanceOf(IncidentRepository.CreateResult.Created.class, r1);
         Incident i2 = createIncident("u2", "ns1", "uid1", IncidentState.INVESTIGATING);
-        assertThrows(org.springframework.dao.DataAccessException.class, () -> repository.create(i2));
+        IncidentRepository.CreateResult r2 = repository.create(i2);
+        assertInstanceOf(IncidentRepository.CreateResult.Duplicate.class, r2);
+        assertEquals("u1", ((IncidentRepository.CreateResult.Duplicate) r2).existingIncidentId());
     }
 
     @Test
@@ -197,7 +207,7 @@ class JdbcIncidentRepositoryTest {
     @Test
     void staleVersionFails() {
         Incident i = createIncident("v1", "ns", "uidv", IncidentState.DETECTED);
-        Incident created = repository.create(i);
+        Incident created = createAndGet(i);
         jdbcClient.sql("UPDATE incidents SET version = 2 WHERE id = 'v1'").update();
         assertThrows(org.springframework.dao.OptimisticLockingFailureException.class, 
             () -> repository.applyTransition(created, new IncidentEvent.ProcessingStarted(), new Transition(IncidentState.INVESTIGATING, Collections.emptySet()))
@@ -258,7 +268,7 @@ class JdbcIncidentRepositoryTest {
     @Test
     void applyingTerminalTransitionSetsClosedAt() {
         Incident i = createIncident("closed1", "nsclosed", "uidclosed", IncidentState.DETECTED);
-        Incident created = repository.create(i);
+        Incident created = createAndGet(i);
         Incident updated = repository.applyTransition(created, new IncidentEvent.WorkloadDeleted(), new Transition(IncidentState.CANCELLED, EnumSet.of(Transition.SideEffect.CLOSE_INCIDENT)));
         assertNotNull(updated.closedAt());
     }
@@ -266,7 +276,7 @@ class JdbcIncidentRepositoryTest {
     @Test
     void applyingNonTerminalTransitionLeavesClosedAtNull() {
         Incident i = createIncident("open1", "nsopen", "uidopen", IncidentState.DETECTED);
-        Incident created = repository.create(i);
+        Incident created = createAndGet(i);
         Incident updated = repository.applyTransition(created, new IncidentEvent.ProcessingStarted(), new Transition(IncidentState.INVESTIGATING, EnumSet.noneOf(Transition.SideEffect.class)));
         assertNull(updated.closedAt());
     }
@@ -279,5 +289,42 @@ class JdbcIncidentRepositoryTest {
         assertDoesNotThrow(() -> 
             jdbcClient.sql("INSERT INTO approvals (incident_id, attempt, proposal_id, proposal_hash, approver_identity, decision, timestamp, approved_until) VALUES ('rej1', 1, 'prop2', 'hash', 'user', 'reject', NOW(), NULL)").update()
         );
+    }
+
+    @Test
+    void findResumableReturnsNonTerminalWithExpiredLease() {
+        Instant now = Instant.parse("2026-10-14T10:00:00Z");
+
+        // 1. Non-terminal with expired lease -> returned
+        Incident r1 = new Incident("r1", "ns-r", "uid-r1", "workload", "oom", IncidentState.INVESTIGATING, 1, 0, 1, "worker-1", now.minusSeconds(60), now.minusSeconds(300), now.minusSeconds(300), null);
+        repository.create(r1);
+
+        // 2. Terminal with expired lease -> NOT returned
+        Incident r2 = new Incident("r2", "ns-r", "uid-r2", "workload", "oom", IncidentState.RESOLVED, 1, 0, 1, "worker-1", now.minusSeconds(60), now.minusSeconds(300), now.minusSeconds(60), now.minusSeconds(60));
+        repository.create(r2);
+
+        // 3. Non-terminal with valid future lease -> NOT returned
+        Incident r3 = new Incident("r3", "ns-r", "uid-r3", "workload", "oom", IncidentState.INVESTIGATING, 1, 0, 1, "worker-1", now.plusSeconds(120), now.minusSeconds(300), now.minusSeconds(300), null);
+        repository.create(r3);
+
+        java.util.List<Incident> resumable = repository.findResumable(now);
+        assertEquals(1, resumable.size());
+        assertEquals("r1", resumable.getFirst().id());
+    }
+
+    @Test
+    void agentTypeRegexConstraintEnforced() {
+        // Valid agent_types: lowercase, alphanumeric, hyphen
+        assertDoesNotThrow(() -> repository.create(new Incident("ok1", "ns-rg", "uid101", "w", "oom", IncidentState.DETECTED, 1, 0, 1, null, null, Instant.now(), Instant.now(), null)));
+        assertDoesNotThrow(() -> repository.create(new Incident("ok2", "ns-rg", "uid102", "w", "deployment-healer", IncidentState.DETECTED, 1, 0, 1, null, null, Instant.now(), Instant.now(), null)));
+        assertDoesNotThrow(() -> repository.create(new Incident("ok3", "ns-rg", "uid103", "w", "custom-agent-1", IncidentState.DETECTED, 1, 0, 1, null, null, Instant.now(), Instant.now(), null)));
+
+        // Invalid agent_types: uppercase, starting with number or dash, empty
+        assertThrows(org.springframework.dao.DataAccessException.class, () -> 
+            repository.create(new Incident("bad1", "ns-rg", "uid104", "w", "OOM", IncidentState.DETECTED, 1, 0, 1, null, null, Instant.now(), Instant.now(), null)));
+        assertThrows(org.springframework.dao.DataAccessException.class, () -> 
+            repository.create(new Incident("bad2", "ns-rg", "uid105", "w", "1agent", IncidentState.DETECTED, 1, 0, 1, null, null, Instant.now(), Instant.now(), null)));
+        assertThrows(org.springframework.dao.DataAccessException.class, () -> 
+            repository.create(new Incident("bad3", "ns-rg", "uid106", "w", "-agent", IncidentState.DETECTED, 1, 0, 1, null, null, Instant.now(), Instant.now(), null)));
     }
 }
