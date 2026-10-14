@@ -3,38 +3,41 @@
 | Current State | Event | Guard | Next State | Side Effects |
 |---|---|---|---|---|
 | DETECTED | ProcessingStarted | None | INVESTIGATING | LOG |
-| DETECTED | WorkloadDeleted | None | CANCELLED | LOG |
-| DETECTED | Recurrence | None | ESCALATED | LOG |
+| DETECTED | WorkloadDeleted | None | CANCELLED | CLOSE_INCIDENT, LOG |
+| DETECTED | Recurrence | None | ESCALATED | CLOSE_INCIDENT, LOG |
+| DETECTED | Timeout | None | ESCALATED | CLOSE_INCIDENT, LOG |
 | INVESTIGATING | EvidenceGathered | None | DIAGNOSING | RESET_TRANSIENT_RETRIES, STORE_EVIDENCE |
 | INVESTIGATING | K8sReadFailed | transientRetries < maxTransientRetries | INVESTIGATING | INCREMENT_TRANSIENT_RETRY |
-| INVESTIGATING | K8sReadFailed | transientRetries >= maxTransientRetries | ESCALATED | LOG |
-| INVESTIGATING | Timeout | None | ESCALATED | LOG |
-| INVESTIGATING | WorkloadDeleted | None | CANCELLED | LOG |
+| INVESTIGATING | K8sReadFailed | transientRetries >= maxTransientRetries | ESCALATED | CLOSE_INCIDENT, LOG |
+| INVESTIGATING | Timeout | None | ESCALATED | CLOSE_INCIDENT, LOG |
+| INVESTIGATING | WorkloadDeleted | None | CANCELLED | CLOSE_INCIDENT, LOG |
 | DIAGNOSING | ProposalAccepted | None | AWAITING_APPROVAL | RESET_TRANSIENT_RETRIES, STORE_PROPOSAL |
 | DIAGNOSING | LlmFailed | transientRetries < maxTransientRetries | DIAGNOSING | INCREMENT_TRANSIENT_RETRY |
-| DIAGNOSING | LlmFailed | transientRetries >= maxTransientRetries | ESCALATED | LOG |
+| DIAGNOSING | LlmFailed | transientRetries >= maxTransientRetries | ESCALATED | CLOSE_INCIDENT, LOG |
 | DIAGNOSING | LlmInvalid | transientRetries < maxTransientRetries | DIAGNOSING | INCREMENT_TRANSIENT_RETRY |
-| DIAGNOSING | LlmInvalid | transientRetries >= maxTransientRetries | ESCALATED | LOG |
-| DIAGNOSING | PolicyDenied | None | ESCALATED | LOG |
-| DIAGNOSING | Timeout | None | ESCALATED | LOG |
-| DIAGNOSING | WorkloadDeleted | None | CANCELLED | LOG |
+| DIAGNOSING | LlmInvalid | transientRetries >= maxTransientRetries | ESCALATED | CLOSE_INCIDENT, LOG |
+| DIAGNOSING | PolicyDenied | None | ESCALATED | CLOSE_INCIDENT, LOG |
+| DIAGNOSING | Timeout | None | ESCALATED | CLOSE_INCIDENT, LOG |
+| DIAGNOSING | WorkloadDeleted | None | CANCELLED | CLOSE_INCIDENT, LOG |
 | AWAITING_APPROVAL | Approved | approval is not expired | REMEDIATING | CREATE_INTENT, RESET_TRANSIENT_RETRIES |
-| AWAITING_APPROVAL | Rejected | None | ESCALATED | LOG |
-| AWAITING_APPROVAL | Timeout | None | ESCALATED | LOG |
-| AWAITING_APPROVAL | WorkloadDeleted | None | CANCELLED | LOG |
-| REMEDIATING | ExecutionPolicyDenied | None | ESCALATED | TERMINATE_INTENT |
-| REMEDIATING | Conflict | attempt < maxAttempts | INVESTIGATING | INCREMENT_ATTEMPT, RESET_TRANSIENT_RETRIES, TERMINATE_INTENT |
-| REMEDIATING | Conflict | attempt >= maxAttempts | ESCALATED | TERMINATE_INTENT |
+| AWAITING_APPROVAL | Rejected | None | ESCALATED | CLOSE_INCIDENT, LOG |
+| AWAITING_APPROVAL | Timeout | None | ESCALATED | CLOSE_INCIDENT, LOG |
+| AWAITING_APPROVAL | WorkloadDeleted | None | CANCELLED | CLOSE_INCIDENT, LOG |
+| REMEDIATING | ExecutionPolicyDenied | None | ESCALATED | CLOSE_INCIDENT, TERMINATE_INTENT |
+| REMEDIATING | Conflict | attempt < maxAttempts | INVESTIGATING | INCREMENT_ATTEMPT, RESET_TRANSIENT_RETRIES, TERMINATE_INTENT, VOID_APPROVAL |
+| REMEDIATING | Conflict | attempt >= maxAttempts | ESCALATED | CLOSE_INCIDENT, TERMINATE_INTENT, VOID_APPROVAL |
 | REMEDIATING | PatchFailed | transientRetries < maxTransientRetries | REMEDIATING | INCREMENT_TRANSIENT_RETRY |
-| REMEDIATING | PatchFailed | transientRetries >= maxTransientRetries | ESCALATED | TERMINATE_INTENT |
+| REMEDIATING | PatchFailed | transientRetries >= maxTransientRetries | ESCALATED | CLOSE_INCIDENT, TERMINATE_INTENT |
 | REMEDIATING | Applied | None | VERIFYING | MARK_INTENT_APPLIED, RESET_TRANSIENT_RETRIES |
 | REMEDIATING | ReconcileResume | None | VERIFYING | SYNC_INTENT_STATE |
-| REMEDIATING | Timeout | None | ESCALATED | TERMINATE_INTENT |
-| REMEDIATING | WorkloadDeleted | None | CANCELLED | TERMINATE_INTENT |
-| VERIFYING | Verified | None | RESOLVED | LOG |
+| REMEDIATING | Timeout | None | ESCALATED | CLOSE_INCIDENT, TERMINATE_INTENT |
+| REMEDIATING | WorkloadDeleted | None | CANCELLED | CLOSE_INCIDENT, TERMINATE_INTENT |
+| VERIFYING | Verified | None | RESOLVED | CLOSE_INCIDENT, LOG |
 | VERIFYING | VerificationFailed | None | REFLECTING | LOG |
 | VERIFYING | Timeout | None | REFLECTING | LOG |
-| VERIFYING | WorkloadDeleted | None | CANCELLED | LOG |
-| VERIFYING | Recurrence | None | ESCALATED | LOG |
+| VERIFYING | WorkloadDeleted | None | CANCELLED | CLOSE_INCIDENT, LOG |
+| VERIFYING | Recurrence | None | ESCALATED | CLOSE_INCIDENT, LOG |
 | REFLECTING | ReflectionCompleted | attempt < maxAttempts | INVESTIGATING | INCREMENT_ATTEMPT, RESET_TRANSIENT_RETRIES |
-| REFLECTING | ReflectionCompleted | attempt >= maxAttempts | ESCALATED | LOG |
+| REFLECTING | ReflectionCompleted | attempt >= maxAttempts | ESCALATED | CLOSE_INCIDENT, LOG |
+| REFLECTING | WorkloadDeleted | None | CANCELLED | CLOSE_INCIDENT, LOG |
+| REFLECTING | Timeout | None | ESCALATED | CLOSE_INCIDENT, LOG |
