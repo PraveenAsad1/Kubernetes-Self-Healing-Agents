@@ -68,3 +68,12 @@
 ## ADR 21: Claim Eligibility Excludes Incidents Awaiting Human Approval
 **Context:** An incident in AWAITING_APPROVAL is blocked on a human decision; picking it up wastes a lease and can cause spurious timeouts.
 **Decision:** claimNext must never return an incident whose state is AWAITING_APPROVAL. Phase 5 will add a wake_at column (nullable TIMESTAMPTZ) that the approval callback sets; claimNext will filter on wake_at IS NULL OR wake_at <= now. Until Phase 5, the state filter in claimNext must explicitly exclude AWAITING_APPROVAL in addition to the three terminal states.
+
+## ADR 22: Detection, Evidence Collection, and Schema Generalization
+**Context:** Phase 2 introduces real-time OOM detection, evidence redaction, and deduplication.
+**Decision:**
+1. **Schema Generalization:** Rather than hardcoding agent names in a static CHECK list in `incidents.agent_type`, migration `V2__generalize_agent_type.sql` replaces the constraint with a regex check: `CHECK (agent_type ~ '^[a-z][a-z0-9-]{0,49}$')`.
+2. **Init Containers:** In Phase 2, OOM terminations on init containers are ignored. Agent 1 is designed to diagnose and patch application containers within Deployments.
+3. **Cooldown & Audit Events:** `IncidentIntake` checks `cooldownUntil(namespace, workloadUid)` before `create()`. Inside cooldown, no incident row is created and exactly one audit event is recorded per workload per cooldown window. Recurrence evaluation and hourly cap enforcement are deferred to Phase 3.
+4. **Redactor Defense-in-Depth:** Redactor applies a 256 KB pre-cap, followed by regex passes (opaque bearer tokens, JSON-quoted keys, case-sensitive AWS keys, full and truncated PEM blocks), preserving prompt injection lines verbatim, before applying a 50 KB tail-preserving cap.
+5. **Typed Port Failures:** `ClusterReader` throws typed domain exception `ClusterReadException`, which `EvidenceCollector` propagates without swallowing.

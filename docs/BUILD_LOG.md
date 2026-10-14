@@ -1,1 +1,2 @@
 - 2026-10-14: Phase 0 and 1 complete (skeleton, FSM, persistence).
+- 2026-10-14: Phase 2 complete (detection, evidence collection, redaction, deduplication, K3s E2E test).
