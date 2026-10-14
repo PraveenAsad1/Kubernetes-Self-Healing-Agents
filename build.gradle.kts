@@ -26,11 +26,15 @@ dependencies {
     implementation("org.flywaydb:flyway-database-postgresql")
     runtimeOnly("org.postgresql:postgresql")
     
+    implementation("io.fabric8:kubernetes-client:8.0.0")
+    
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("com.tngtech.archunit:archunit-junit5:1.4.2")
     testImplementation("org.testcontainers:testcontainers")
     testImplementation("org.testcontainers:testcontainers-postgresql")
     testImplementation("org.testcontainers:testcontainers-junit-jupiter")
+    testImplementation("org.testcontainers:testcontainers-k3s:2.0.5")
+    testImplementation("io.fabric8:kubernetes-server-mock:8.0.0")
 }
 
 tasks.withType<Test> {
