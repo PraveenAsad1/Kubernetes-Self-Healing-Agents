@@ -1,0 +1,1 @@
+- 2026-10-14: Phase 0 and 1 complete (skeleton, FSM, persistence).
