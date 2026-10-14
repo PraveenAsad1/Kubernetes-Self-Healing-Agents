@@ -60,3 +60,11 @@
 
 ## ADR 19: Rule 16 Guard Startup Wiring
 **Decision:** We use a pure Java ClusterContextGuard to enforce the kubeconfig-context allowlist. Startup wiring is a Phase 2 acceptance criterion (fabric8 supplies the active context; startup must fail on a disallowed one, with a test).
+
+## ADR 20: Explicit Grants in Every Migration
+**Context:** V1__init.sql issues REVOKE ALL … FROM safeheal_app before any GRANTs, and no default privileges are configured.
+**Decision:** Every future migration (V2, V3, …) that creates new tables or sequences MUST end with explicit GRANT statements to safeheal_app. Omitting the GRANT will leave the new table inaccessible to the application. This is the only mechanism; there is no default-privilege fallback.
+
+## ADR 21: Claim Eligibility Excludes Incidents Awaiting Human Approval
+**Context:** An incident in AWAITING_APPROVAL is blocked on a human decision; picking it up wastes a lease and can cause spurious timeouts.
+**Decision:** claimNext must never return an incident whose state is AWAITING_APPROVAL. Phase 5 will add a wake_at column (nullable TIMESTAMPTZ) that the approval callback sets; claimNext will filter on wake_at IS NULL OR wake_at <= now. Until Phase 5, the state filter in claimNext must explicitly exclude AWAITING_APPROVAL in addition to the three terminal states.
