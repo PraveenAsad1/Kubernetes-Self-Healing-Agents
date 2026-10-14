@@ -1,39 +1,162 @@
 package com.safeheal.persistence;
 
 import com.safeheal.incident.Incident;
-import com.safeheal.incident.IncidentRepository;
+import com.safeheal.incident.IncidentEvent;
+import com.safeheal.incident.IncidentState;
+import com.safeheal.incident.Transition;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 
 @Repository
-public class JdbcIncidentRepository implements IncidentRepository {
+public class JdbcIncidentRepository {
+
     private final JdbcClient jdbcClient;
 
     public JdbcIncidentRepository(JdbcClient jdbcClient) {
         this.jdbcClient = jdbcClient;
     }
 
-    public void save(Incident incident) {
-        jdbcClient.sql("INSERT INTO incidents (id, namespace, workload_uid, workload_name, agent_type, state, attempt, transient_retries, version, created_at, updated_at) " +
-                       "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-            .param(incident.id())
-            .param(incident.namespace())
-            .param(incident.workloadUid())
-            .param(incident.workloadName())
-            .param(incident.agentType())
-            .param(incident.state().name())
-            .param(incident.attempt())
-            .param(incident.transientRetries())
-            .param(incident.version())
-            .param(incident.createdAt())
-            .param(incident.updatedAt())
+    @Transactional
+    public Incident create(Incident incident) {
+        jdbcClient.sql("""
+            INSERT INTO incidents (id, target_workload, namespace, workload_uid, workload_name, agent_type, type, state, attempt, transient_retries, version, claimed_by, lease_until, created_at, updated_at, closed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """).params(
+            incident.id(),
+            "target", // placeholder
+            incident.namespace(),
+            incident.workloadUid(),
+            incident.workloadName(),
+            incident.agentType(),
+            "type", // placeholder
+            incident.state().name(),
+            incident.attempt(),
+            incident.transientRetries(),
+            incident.version(),
+            incident.claimedBy(),
+            incident.leaseUntil() != null ? java.sql.Timestamp.from(incident.leaseUntil()) : null,
+            incident.createdAt() != null ? java.sql.Timestamp.from(incident.createdAt()) : null,
+            incident.updatedAt() != null ? java.sql.Timestamp.from(incident.updatedAt()) : null,
+            incident.closedAt() != null ? java.sql.Timestamp.from(incident.closedAt()) : null
+        ).update();
+        return incident;
+    }
+
+    public Optional<Incident> findById(String id) {
+        return jdbcClient.sql("SELECT * FROM incidents WHERE id = ?").param(id)
+            .query((rs, rowNum) -> new Incident(
+                rs.getString("id"),
+                rs.getString("namespace"),
+                rs.getString("workload_uid"),
+                rs.getString("workload_name"),
+                rs.getString("agent_type"),
+                IncidentState.valueOf(rs.getString("state")),
+                rs.getInt("attempt"),
+                rs.getInt("transient_retries"),
+                rs.getInt("version"),
+                rs.getString("claimed_by"),
+                rs.getTimestamp("lease_until") != null ? rs.getTimestamp("lease_until").toInstant() : null,
+                rs.getTimestamp("created_at").toInstant(),
+                rs.getTimestamp("updated_at").toInstant(),
+                rs.getTimestamp("closed_at") != null ? rs.getTimestamp("closed_at").toInstant() : null
+            )).optional();
+    }
+
+    @Transactional
+    public Incident applyTransition(Incident incident, IncidentEvent event, Transition transition) {
+        int rows = jdbcClient.sql("""
+            UPDATE incidents SET state = ?, attempt = ?, transient_retries = ?, version = version + 1, updated_at = ?, closed_at = ?
+            WHERE id = ? AND version = ?
+        """).params(
+            transition.nextState().name(),
+            incident.attempt(),
+            incident.transientRetries(),
+            java.sql.Timestamp.from(Instant.now()),
+            transition.nextState().isTerminal() ? java.sql.Timestamp.from(Instant.now()) : null,
+            incident.id(),
+            incident.version()
+        ).update();
+
+        if (rows == 0) {
+            throw new org.springframework.dao.OptimisticLockingFailureException("Stale version");
+        }
+
+        jdbcClient.sql("""
+            INSERT INTO incident_transitions (incident_id, from_state, to_state, event_type, attempt, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """).params(
+            incident.id(),
+            incident.state().name(),
+            transition.nextState().name(),
+            event.getClass().getSimpleName(),
+            incident.attempt(),
+            java.sql.Timestamp.from(Instant.now())
+        ).update();
+
+        // Apply side effects as needed
+        return findById(incident.id()).orElseThrow();
+    }
+
+    @Transactional
+    public Optional<Incident> claimNext(String workerId, java.time.Duration leaseDuration, Instant now) {
+        return jdbcClient.sql("""
+            UPDATE incidents SET claimed_by = ?, lease_until = ?, version = version + 1
+            WHERE id = (
+                SELECT id FROM incidents
+                WHERE state NOT IN ('RESOLVED', 'ESCALATED', 'CANCELLED', 'AWAITING_APPROVAL')
+                  AND (lease_until IS NULL OR lease_until < ?)
+                ORDER BY created_at
+                FOR UPDATE SKIP LOCKED LIMIT 1
+            )
+            RETURNING *
+        """)
+        .params(workerId, java.sql.Timestamp.from(now.plus(leaseDuration)), java.sql.Timestamp.from(now))
+        .query((rs, rowNum) -> new Incident(
+            rs.getString("id"),
+            rs.getString("namespace"),
+            rs.getString("workload_uid"),
+            rs.getString("workload_name"),
+            rs.getString("agent_type"),
+            IncidentState.valueOf(rs.getString("state")),
+            rs.getInt("attempt"),
+            rs.getInt("transient_retries"),
+            rs.getInt("version"),
+            rs.getString("claimed_by"),
+            rs.getTimestamp("lease_until") != null ? rs.getTimestamp("lease_until").toInstant() : null,
+            rs.getTimestamp("created_at") != null ? rs.getTimestamp("created_at").toInstant() : null,
+            rs.getTimestamp("updated_at") != null ? rs.getTimestamp("updated_at").toInstant() : null,
+            rs.getTimestamp("closed_at") != null ? rs.getTimestamp("closed_at").toInstant() : null
+        )).optional();
+    }
+
+    @Transactional
+    public void heartbeat(String id, String workerId, Instant now, java.time.Duration leaseDuration) {
+        int rows = jdbcClient.sql("UPDATE incidents SET lease_until = ? WHERE id = ? AND claimed_by = ?")
+            .params(java.sql.Timestamp.from(now.plus(leaseDuration)), id, workerId)
             .update();
+        if (rows == 0) throw new IllegalStateException("Heartbeat failed, not owner");
     }
     
-    public Optional<Incident> findById(String id) {
-        // Simple stub for now to satisfy basic test compilation
-        return Optional.empty();
+    public List<Incident> findResumable() {
+        return List.of();
+    }
+    
+    public Instant cooldownUntil(String namespace, String workloadUid) {
+        return jdbcClient.sql("SELECT closed_at FROM incidents WHERE namespace = ? AND workload_uid = ? ORDER BY closed_at DESC LIMIT 1")
+            .params(namespace, workloadUid)
+            .query((rs, rowNum) -> rs.getTimestamp("closed_at") != null ? rs.getTimestamp("closed_at").toInstant() : null)
+            .optional().orElse(null);
+    }
+    
+    public int appliedRemediationsSince(Instant since) {
+        return jdbcClient.sql("SELECT COUNT(*) FROM remediation_intents WHERE status = 'applied' AND applied_at > ?")
+            .param(java.sql.Timestamp.from(since))
+            .query(Integer.class)
+            .single();
     }
 }
